@@ -195,7 +195,16 @@ pub fn run() {
             plugins::plugin_fs_exists,
             plugins::plugin_run,
             plugins::plugin_sql,
+            plugins::plugin_py_start,
+            plugins::plugin_py_send,
+            plugins::plugin_py_stop,
         ])
-        .run(tauri::generate_context!())
-        .expect("NEXUS ANIME konnte nicht gestartet werden");
+        .build(tauri::generate_context!())
+        .expect("NEXUS ANIME konnte nicht gestartet werden")
+        .run(|_, event| {
+            // Python-Plugins laufen als eigene Prozesse – beim Beenden mit schließen
+            if let tauri::RunEvent::Exit = event {
+                plugins::stop_all_python();
+            }
+        });
 }

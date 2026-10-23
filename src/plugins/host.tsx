@@ -3,8 +3,9 @@
 //
 // Plugins haben vollen Zugriff auf die App (Backend-Befehle, Dateisystem, HTTP, Programme, SQL).
 import * as React from "react";
-import { Component, ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Component, ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { api, Episode, errorText, imageUrl, InstalledPlugin, PluginManifest, Series, Settings, videoUrl } from "../api";
 import type { Route, MenuItem, Toast } from "../store";
 import { Modal } from "../components/ui";
@@ -15,10 +16,12 @@ import { t } from "../i18n";
 // Typen der Erweiterungspunkte
 // ---------------------------------------------------------------------------
 
-/** Inhalt, den ein Plugin anzeigt: entweder React (`render`) oder direktes DOM (`mount`). */
+/** Inhalt, den ein Plugin anzeigt: React (`render`), direktes DOM (`mount`) oder HTML (`html` + `actions`). */
 export type ViewSpec<C = unknown> = {
   render?: (ctx: C) => ReactNode;
   mount?: (el: HTMLElement, ctx: C) => void | (() => void);
+  html?: string | ((ctx: C) => string | Promise<string>);
+  actions?: Record<string, (data: Record<string, unknown>, ctx: C) => unknown>;
 };
 
 type Owned = { pluginId: string; uid: string };
@@ -62,6 +65,7 @@ export type PluginStatus = {
   description: string;
   author: string;
   builtin: boolean;
+  runtime: "builtin" | "js" | "python";
   enabled: boolean;
   active: boolean;
   error: string | null;
@@ -469,7 +473,7 @@ export function reloadPlugins(): Promise<void> {
     for (const b of builtins) {
       const st: PluginStatus = {
         id: b.manifest.id, name: b.manifest.name, version: b.manifest.version ?? "", description: b.manifest.description ?? "",
-        author: b.manifest.author ?? "NEXUS ANIME", builtin: true, enabled: isOn(b.manifest.id, b.manifest), active: false, error: null, dir: null, manifest: b.manifest,
+        author: b.manifest.author ?? "NEXUS ANIME", builtin: true, runtime: "builtin", enabled: isOn(b.manifest.id, b.manifest), active: false, error: null, dir: null, manifest: b.manifest,
       };
       if (st.enabled) {
         try {
@@ -486,13 +490,13 @@ export function reloadPlugins(): Promise<void> {
       const m = p.manifest;
       const st: PluginStatus = {
         id: p.id, name: m.name ?? p.id, version: m.version ?? "", description: m.description ?? "", author: m.author ?? "",
-        builtin: false, enabled: isOn(p.id, m), active: false, error: p.error, dir: p.dir, manifest: m,
+        builtin: false, runtime: isPythonPlugin(m) ? "python" : "js", enabled: isOn(p.id, m), active: false, error: p.error, dir: p.dir, manifest: m,
       };
       if (builtins.some((b) => b.manifest.id === p.id)) st.error = "Diese ID ist bereits von einem eingebauten Plugin belegt";
       if (st.enabled && !st.error) {
         try {
-          const code = await api.pluginReadFile(p.id, m.main ?? "main.js");
-          await activate({ id: p.id, manifest: m, builtin: false, dir: p.dir }, await loadModule(code, p.id));
+          const fn = isPythonPlugin(m) ? pythonActivate(p.id, m) : await loadModule(await api.pluginReadFile(p.id, m.main ?? "main.js"), p.id);
+          await activate({ id: p.id, manifest: m, builtin: false, dir: p.dir }, fn);
           st.active = true;
           api.log("info", `Plugin ${p.id} ${m.version ?? ""} geladen`);
         } catch (e) {
@@ -583,11 +587,78 @@ function Rendered<C>({ spec, ctx }: { spec: ViewSpec<C>; ctx: C }) {
   return <>{spec.render!(ctx)}</>;
 }
 
+/** HTML-Ansicht: `html` liefert Markup; Elemente mit data-action rufen `actions[name](daten)` auf,
+ *  danach wird neu gezeichnet. Formularfelder mit name-Attribut werden mitgeschickt. */
+function HtmlView<C>({ spec, ctx }: { spec: ViewSpec<C>; ctx: C }) {
+  const [html, setHtml] = useState<string | null>(typeof spec.html === "string" ? spec.html : null);
+  const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const ctxKey = JSON.stringify(toWire(ctx));
+  const load = useCallback(async () => {
+    try {
+      const h = typeof spec.html === "function" ? await spec.html(ctx) : spec.html;
+      setHtml(h == null ? "" : String(h));
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, [spec, ctxKey]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const collect = (el: HTMLElement) => {
+    const data: Record<string, unknown> = { ...el.dataset };
+    delete data.action;
+    ref.current?.querySelectorAll<HTMLInputElement>("input[name], select[name], textarea[name]").forEach((f) => {
+      data[f.name] = f.type === "checkbox" ? f.checked : f.type === "number" ? Number(f.value) : f.value;
+    });
+    return data;
+  };
+  const run = async (name: string, el: HTMLElement) => {
+    const fn = spec.actions?.[name];
+    if (!fn) return;
+    try {
+      await fn(collect(el), ctx);
+    } catch (e) {
+      bridge?.toast("error", t("toast.error"), errorText(e));
+    }
+    await load();
+  };
+  const onClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const link = target.closest("a[href]") as HTMLAnchorElement | null;
+    if (link && /^https?:/i.test(link.getAttribute("href") ?? "")) {
+      // Links nicht im App-Fenster öffnen, sondern im Browser
+      e.preventDefault();
+      api.openLink(link.href).catch((err) => bridge?.toast("error", t("toast.error"), errorText(err)));
+      return;
+    }
+    const el = target.closest("[data-action]") as HTMLElement | null;
+    if (!el || el.tagName === "FORM" || !ref.current?.contains(el)) return;
+    e.preventDefault();
+    run(el.dataset.action!, el);
+  };
+  const onSubmit = (e: React.FormEvent) => {
+    const form = e.target as HTMLElement;
+    e.preventDefault();
+    if (form.dataset.action) run(form.dataset.action, form);
+  };
+  if (error)
+    return (
+      <div className="plugin-error">
+        <div>{error}</div>
+      </div>
+    );
+  if (html === null) return <div className="spinner" style={{ margin: 24 }} />;
+  return <div ref={ref} className="plugin-html" onClick={onClick} onSubmit={onSubmit} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 /** Zeigt eine Plugin-Ansicht sicher an – Fehler bleiben auf den Bereich beschränkt. */
 export function PluginView<C>({ pluginId, spec, ctx }: { pluginId: string; spec: ViewSpec<C>; ctx: C }) {
   return (
     <Boundary pluginId={pluginId}>
-      {spec.render ? <Rendered spec={spec} ctx={ctx} /> : spec.mount ? <Mounted spec={spec} ctx={ctx} /> : null}
+      {spec.render ? <Rendered spec={spec} ctx={ctx} /> : spec.mount ? <Mounted spec={spec} ctx={ctx} /> : spec.html !== undefined ? <HtmlView spec={spec} ctx={ctx} /> : null}
     </Boundary>
   );
 }
@@ -698,3 +769,168 @@ export function handlePluginShortcut(e: KeyboardEvent, inPlayer: boolean): boole
   }
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Python-Plugins: eigener Prozess, JSON-Zeilen über das Backend
+// ---------------------------------------------------------------------------
+
+type PyMsg = { id: string; line: string | null; stderr: string | null; exit: number | null };
+type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
+type PyConn = { nexus: Nexus; pending: Map<number, Pending>; stderr: string[]; ready: Pending | null; active: boolean };
+
+const pyConns = new Map<string, PyConn>();
+let pyListener: Promise<unknown> | null = null;
+let pySeq = 0;
+
+/** Wandelt Werte in JSON-taugliche Daten um (ohne Funktionen, DOM-Elemente, Zyklen). */
+export function toWire(v: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  if (typeof v === "string" || typeof v === "boolean") return v;
+  if (typeof v !== "object" || depth > 40) return null;
+  if (seen.has(v)) return null;
+  seen.add(v);
+  if (Array.isArray(v)) return v.map((x) => toWire(x, seen, depth + 1));
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(v)) if (typeof x !== "function") out[k] = toWire(x, seen, depth + 1);
+  return out;
+}
+
+function pySend(id: string, msg: unknown) {
+  return api.pluginPySend(id, JSON.stringify(msg));
+}
+
+function pyInvoke(id: string, conn: PyConn, cb: string, args: unknown[]) {
+  if (!conn.active) return Promise.reject(new Error(t("plugins.pyStopped")));
+  const mid = ++pySeq;
+  return new Promise((resolve, reject) => {
+    conn.pending.set(mid, { resolve, reject });
+    pySend(id, { type: "invoke", id: mid, cb, args: toWire(args) }).catch((e) => {
+      conn.pending.delete(mid);
+      reject(e);
+    });
+  });
+}
+
+/** Funktionen aus Python ({"__cb": …}) werden zu JS-Funktionen, die Python aufrufen. */
+function fromWire(id: string, conn: PyConn, v: unknown): unknown {
+  if (Array.isArray(v)) return v.map((x) => fromWire(id, conn, x));
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (typeof o.__cb === "string") {
+      const cb = o.__cb;
+      return (...args: unknown[]) => pyInvoke(id, conn, cb, args);
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(o)) out[k] = fromWire(id, conn, x);
+    return out;
+  }
+  return v;
+}
+
+async function pyHandleCall(id: string, conn: PyConn, msg: { id: number; method: string; args?: unknown[] }) {
+  try {
+    let self: any = null;
+    let target: any = conn.nexus;
+    for (const part of String(msg.method).split(".")) {
+      if (target == null || !(part in Object(target))) throw new Error(`Unbekannte Funktion nexus.${msg.method}`);
+      self = target;
+      target = target[part];
+    }
+    const args = (fromWire(id, conn, msg.args ?? []) as unknown[]) ?? [];
+    const value = typeof target === "function" ? await target.apply(self, args) : target;
+    await pySend(id, { type: "result", id: msg.id, value: toWire(value) });
+  } catch (e) {
+    await pySend(id, { type: "error", id: msg.id, error: errorText(e) }).catch(() => {});
+  }
+}
+
+function pyFail(id: string, conn: PyConn, error: Error) {
+  conn.active = false;
+  conn.pending.forEach((p) => p.reject(error));
+  conn.pending.clear();
+  if (conn.ready) {
+    conn.ready.reject(error);
+    conn.ready = null;
+    return;
+  }
+  // Lief schon: Erweiterungen entfernen und Fehler an der Plugin-Karte zeigen
+  if (pyConns.get(id) === conn) {
+    pyConns.delete(id);
+    deactivate(id);
+    statuses = statuses.map((s) => (s.id === id ? { ...s, active: false, error: error.message } : s));
+    notify();
+    bridge?.toast("error", t("plugins.pyExited", { p: statuses.find((s) => s.id === id)?.name ?? id }), error.message.split("\n").slice(-1)[0]);
+  }
+}
+
+function onPyMessage(m: PyMsg) {
+  const conn = pyConns.get(m.id);
+  if (!conn) return;
+  if (m.stderr != null) {
+    conn.stderr.push(m.stderr);
+    if (conn.stderr.length > 40) conn.stderr.shift();
+    console.log(`[${m.id}]`, m.stderr);
+    return;
+  }
+  if (m.exit != null) {
+    const tail = conn.stderr.slice(-12).join("\n");
+    pyFail(m.id, conn, new Error(tail || t("plugins.pyExitCode", { n: m.exit })));
+    return;
+  }
+  if (!m.line) return;
+  let msg: any;
+  try {
+    msg = JSON.parse(m.line);
+  } catch {
+    console.log(`[${m.id}]`, m.line);
+    return;
+  }
+  if (msg.type === "ready") {
+    conn.ready?.resolve(true);
+    conn.ready = null;
+  } else if (msg.type === "fatal") {
+    pyFail(m.id, conn, new Error(String(msg.error ?? "").trim()));
+  } else if (msg.type === "call") {
+    pyHandleCall(m.id, conn, msg);
+  } else if (msg.type === "result" || msg.type === "error") {
+    const p = conn.pending.get(msg.id);
+    if (!p) return;
+    conn.pending.delete(msg.id);
+    if (msg.type === "result") p.resolve(msg.value);
+    else p.reject(new Error(msg.error));
+  }
+}
+
+function pythonActivate(id: string, manifest: PluginManifest): Activate {
+  return async (nexus) => {
+    pyListener ??= listen<PyMsg>("plugin-py://message", (e) => onPyMessage(e.payload));
+    await pyListener;
+    const conn: PyConn = { nexus, pending: new Map(), stderr: [], ready: null, active: true };
+    const ready = new Promise((resolve, reject) => (conn.ready = { resolve, reject }));
+    pyConns.set(id, conn);
+    const stop = () => {
+      conn.active = false;
+      if (pyConns.get(id) === conn) pyConns.delete(id);
+      conn.pending.forEach((p) => p.reject(new Error(t("plugins.pyStopped"))));
+      conn.pending.clear();
+      api.pluginPyStop(id).catch(() => {});
+    };
+    try {
+      await api.pluginPyStart(id, manifest.main ?? "main.py", manifest.python);
+      let timer: number | undefined;
+      await Promise.race([
+        ready,
+        new Promise((_, reject) => (timer = window.setTimeout(() => reject(new Error(t("plugins.pyTimeout"))), 30000))),
+      ]).finally(() => clearTimeout(timer));
+    } catch (e) {
+      stop();
+      throw e;
+    }
+    return stop;
+  };
+}
+
+export const isPythonPlugin = (m: PluginManifest) => m.runtime === "python" || (m.main ?? "").toLowerCase().endsWith(".py");

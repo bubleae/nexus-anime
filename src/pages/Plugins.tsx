@@ -82,12 +82,12 @@ function PluginCard({ p }: { p: PluginStatus }) {
   return (
     <div className={`plugin-card ${p.enabled ? "on" : ""}`}>
       <div className="plugin-head">
-        <div className="plugin-ic">{p.builtin ? <Puzzle size={20} /> : <FileCode2 size={20} />}</div>
+        <div className="plugin-ic">{p.builtin ? <Puzzle size={20} /> : p.runtime === "python" ? <span className="py-ic">Py</span> : <FileCode2 size={20} />}</div>
         <div className="grow">
           <div className="plugin-name">
             {p.name}
             {p.version && <span className="hint"> {p.version}</span>}
-            <span className={`tag ${p.builtin ? "" : "ext"}`}>{p.builtin ? t("plugins.builtin") : t("plugins.external")}</span>
+            <span className={`tag ${p.runtime}`}>{p.runtime === "builtin" ? t("plugins.builtin") : p.runtime === "python" ? "Python" : "JavaScript"}</span>
           </div>
           {p.description && <div className="s-desc">{p.description}</div>}
           {(p.author || !p.builtin) && <div className="hint" style={{ fontSize: 12 }}>{[p.author, !p.builtin && p.id].filter(Boolean).join(" · ")}</div>}
@@ -176,7 +176,7 @@ export function PluginSettings() {
     }
   };
   const install = async (folder: boolean) => {
-    const picked = folder ? await open({ directory: true }) : await open({ filters: [{ name: "JavaScript", extensions: ["js", "mjs"] }] });
+    const picked = folder ? await open({ directory: true }) : await open({ filters: [{ name: "Plugin (JavaScript/Python)", extensions: ["js", "mjs", "py"] }] });
     if (!picked || Array.isArray(picked)) return;
     try {
       const id = await api.pluginInstall(picked);
@@ -187,14 +187,14 @@ export function PluginSettings() {
       fail(e);
     }
   };
-  const create = () =>
+  const create = (lang: "js" | "py") =>
     openDialog(
       <PromptDialog
-        title={t("plugins.create")}
+        title={lang === "py" ? t("plugins.createPy") : t("plugins.create")}
         label={t("plugins.createLabel")}
         initial={t("plugins.createDefault")}
         onSubmit={async (name) => {
-          const id = await api.pluginCreate(name);
+          const id = await api.pluginCreate(name, lang);
           await reloadPlugins();
           toast("success", t("plugins.created"), id);
           const dir = getPluginsDir();
@@ -209,7 +209,8 @@ export function PluginSettings() {
         <h3>{t("plugins.title")}</h3>
         <div className="desc">{t("plugins.text")}</div>
         <div className="plugin-toolbar">
-          <button className="btn primary small" onClick={create}><Plus size={15} /> {t("plugins.create")}</button>
+          <button className="btn primary small" onClick={() => create("js")}><Plus size={15} /> {t("plugins.create")}</button>
+          <button className="btn primary small" onClick={() => create("py")}><Plus size={15} /> {t("plugins.createPy")}</button>
           <button className="btn small" onClick={() => install(true)}><FolderPlus size={15} /> {t("plugins.installFolder")}</button>
           <button className="btn small" onClick={() => install(false)}><FileCode2 size={15} /> {t("plugins.installFile")}</button>
           <button className="btn small" disabled={reloading} onClick={reload}><RefreshCw size={15} className={reloading ? "spin-icon" : ""} /> {t("plugins.reload")}</button>

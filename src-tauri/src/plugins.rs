@@ -5,17 +5,23 @@
 //! liefert Dateien, speichert Zustand und Plugin-Daten und stellt Fähigkeiten bereit, die im
 //! WebView nicht möglich sind (HTTP ohne CORS, Dateisystem, Programme starten, SQL).
 //!
+//! Python-Plugins (`main.py`) laufen als eigener Prozess mit dem installierten Python. Sie sprechen
+//! über JSON-Zeilen auf stdin/stdout mit der Oberfläche; das Modul `nexus` (python/nexus.py) kapselt das.
+//!
 //! Plugins haben bewusst vollen Zugriff – installiere nur Plugins, denen du vertraust.
 
 use rusqlite::types::ValueRef;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::io::{BufRead, BufReader, Write as _};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Mutex;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -205,27 +211,33 @@ pub fn plugin_install(state: State<AppState>, path: String) -> Cmd<String> {
         if src.canonicalize().ok() == target.canonicalize().ok() {
             return Ok(id);
         }
+        stop_python(&id);
         if target.exists() {
             trash::delete(&target)?;
         }
         copy_dir(&src, &target)?;
         log::info!("Plugin {id} installiert aus {path}");
         Ok(id)
-    } else if src.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("js") || e.eq_ignore_ascii_case("mjs")) {
+    } else if let Some(main) = src.extension().and_then(|e| e.to_str()).and_then(|e| match e.to_ascii_lowercase().as_str() {
+        "js" | "mjs" => Some("main.js"),
+        "py" => Some("main.py"),
+        _ => None,
+    }) {
         let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("plugin").to_string();
         let id = slug(&stem);
         let target = root.join(&id);
+        stop_python(&id);
         if target.exists() {
             trash::delete(&target)?;
         }
         std::fs::create_dir_all(&target)?;
-        std::fs::copy(&src, target.join("main.js"))?;
-        let manifest = json!({ "id": id, "name": stem, "version": "1.0.0", "main": "main.js", "description": "" });
+        std::fs::copy(&src, target.join(main))?;
+        let manifest = json!({ "id": id, "name": stem, "version": "1.0.0", "main": main, "description": "" });
         std::fs::write(target.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
         log::info!("Plugin {id} installiert aus Datei {path}");
         Ok(id)
     } else {
-        Err(AppError::msg("Bitte einen Plugin-Ordner (mit manifest.json) oder eine .js-Datei wählen"))
+        Err(AppError::msg("Bitte einen Plugin-Ordner (mit manifest.json), eine .js- oder eine .py-Datei wählen"))
     }
 }
 
@@ -234,6 +246,7 @@ pub fn plugin_uninstall(state: State<AppState>, id: String) -> Cmd<()> {
     if !valid_id(&id) {
         return Err(AppError::msg("Ungültige Plugin-ID"));
     }
+    stop_python(&id);
     let dir = plugins_dir(&state)?.join(&id);
     if dir.exists() {
         trash::delete(&dir)?;
@@ -281,9 +294,52 @@ export default function activate(nexus) {
 }
 "#;
 
-/// Legt ein neues Plugin aus einer Vorlage an und gibt seine ID zurück.
+const TEMPLATE_PY: &str = r#"# Neues NEXUS-ANIME-Plugin in Python. Dokumentation: Einstellungen → Plugins → „Anleitung & API“.
+# Nach Änderungen: Einstellungen → Plugins → „Neu laden“. print() landet im Protokoll.
+import nexus
+
+# 1) Eine eigene Seite (erscheint im Menü „Mehr“). Die Funktion liefert HTML;
+#    Elemente mit data-action rufen die passende Funktion aus `actions` auf.
+klicks = 0
+
+
+def seite(ctx):
+    anzahl = len(nexus.library.series())
+    return f"""
+      <div class="page">
+        <h1 class="page-title">__NAME__</h1>
+        <p class="hint">Deine Bibliothek enthält {anzahl} Serien. Geklickt: {klicks}</p>
+        <button class="btn primary" data-action="klick">Klick mich</button>
+      </div>"""
+
+
+def klick(data):
+    global klicks
+    klicks += 1
+    nexus.ui.toast("success", "Hallo aus Python!")
+
+
+nexus.ui.add_page(id="main", title="__NAME__", icon="🐍", html=seite, actions={"klick": klick})
+
+
+# 2) Ein Eintrag im Episoden-Menü (Rechtsklick auf eine Folge)
+def dateiname(episode):
+    nexus.ui.toast("info", episode.file_name)
+
+
+nexus.ui.add_episode_menu_item(label="Dateinamen anzeigen (Python)", on_click=dateiname)
+
+
+# 3) Auf Ereignisse reagieren
+@nexus.on("episode:watched")
+def angesehen(data):
+    print("Fertig angesehen:", data.episode.file_name)
+"#;
+
+/// Legt ein neues Plugin aus einer Vorlage an und gibt seine ID zurück. `lang`: "js" (Standard) oder "py".
 #[tauri::command(async)]
-pub fn plugin_create(state: State<AppState>, name: String) -> Cmd<String> {
+pub fn plugin_create(state: State<AppState>, name: String, lang: Option<String>) -> Cmd<String> {
+    let python = lang.as_deref() == Some("py");
     let name = name.trim();
     let name = if name.is_empty() { "Mein Plugin" } else { name };
     let root = plugins_dir(&state)?;
@@ -302,11 +358,16 @@ pub fn plugin_create(state: State<AppState>, name: String) -> Cmd<String> {
         "version": "1.0.0",
         "description": "Eigenes Plugin",
         "author": "",
-        "main": "main.js",
+        "main": if python { "main.py" } else { "main.js" },
         "styles": [],
     });
     std::fs::write(dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
-    std::fs::write(dir.join("main.js"), TEMPLATE_JS.replace("__NAME__", &name.replace('"', "'").replace('`', "'")))?;
+    let safe = name.replace('"', "'").replace('`', "'");
+    if python {
+        std::fs::write(dir.join("main.py"), TEMPLATE_PY.replace("__NAME__", &safe))?;
+    } else {
+        std::fs::write(dir.join("main.js"), TEMPLATE_JS.replace("__NAME__", &safe))?;
+    }
     // Neue Plugins sind sofort aktiv
     let conn = state.db()?;
     let mut s = load_states(&conn)?;
@@ -525,4 +586,167 @@ pub fn plugin_sql(state: State<AppState>, sql: String, params: Option<Vec<Value>
         out.push(Value::Object(obj));
     }
     Ok(Value::Array(out))
+}
+
+// ---------------------------------------------------------------------------
+// Python-Plugins
+// ---------------------------------------------------------------------------
+
+/// Laufzeitmodul `nexus` für Python-Plugins.
+const PY_RUNTIME: &str = include_str!("../python/nexus.py");
+
+struct PyProc {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+static PY_PROCS: LazyLock<Mutex<HashMap<String, PyProc>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static PY_CMD: LazyLock<Mutex<Option<Vec<String>>>> = LazyLock::new(|| Mutex::new(None));
+
+#[cfg(windows)]
+fn hide_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+}
+#[cfg(not(windows))]
+fn hide_window(_: &mut Command) {}
+
+/// Sucht ein Python-3-Programm. Ein Erfolg wird gemerkt, ein Fehlschlag nicht (Python kann nachinstalliert werden).
+fn find_python(custom: Option<&str>) -> AppResult<Vec<String>> {
+    let mut candidates: Vec<Vec<String>> = vec![];
+    if let Some(c) = custom.filter(|c| !c.trim().is_empty()) {
+        candidates.push(vec![c.to_string()]);
+    } else {
+        if let Some(c) = PY_CMD.lock().ok().and_then(|g| g.clone()) {
+            return Ok(c);
+        }
+        candidates.extend([vec!["python".into()], vec!["py".into(), "-3".into()], vec!["python3".into()]]);
+    }
+    for c in candidates {
+        let mut cmd = Command::new(&c[0]);
+        cmd.args(&c[1..]).arg("--version").stdin(Stdio::null());
+        hide_window(&mut cmd);
+        if let Ok(out) = cmd.output() {
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            if out.status.success() && text.contains("Python 3") {
+                if custom.is_none() {
+                    if let Ok(mut g) = PY_CMD.lock() {
+                        *g = Some(c.clone());
+                    }
+                }
+                return Ok(c);
+            }
+        }
+    }
+    Err(AppError::msg(
+        "Python 3 wurde nicht gefunden. Installiere Python von python.org (Option „Add python.exe to PATH“) oder gib im Manifest unter \"python\" den Pfad zu python.exe an.",
+    ))
+}
+
+pub fn stop_python(id: &str) {
+    if let Some(mut p) = PY_PROCS.lock().ok().and_then(|mut g| g.remove(id)) {
+        let _ = p.child.kill();
+        let _ = p.child.wait();
+        log::info!("Python-Plugin {id} beendet");
+    }
+}
+
+/// Beendet alle Python-Plugins (beim Schließen der App).
+pub fn stop_all_python() {
+    let ids: Vec<String> = PY_PROCS.lock().map(|g| g.keys().cloned().collect()).unwrap_or_default();
+    for id in ids {
+        stop_python(&id);
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct PyMessage {
+    id: String,
+    line: Option<String>,
+    stderr: Option<String>,
+    exit: Option<i32>,
+}
+
+/// Startet ein Python-Plugin. Nachrichten kommen als Ereignis `plugin-py://message` an.
+#[tauri::command(async)]
+pub fn plugin_py_start(app: AppHandle, state: State<AppState>, id: String, main: String, python: Option<String>) -> Cmd<String> {
+    stop_python(&id);
+    let script = plugin_file(&state, &id, &main)?;
+    if !script.is_file() {
+        return Err(AppError::msg(format!("{main} fehlt im Plugin-Ordner")));
+    }
+    let dir = plugins_dir(&state)?.join(&id);
+    let runtime_dir = state.data_dir.join("python");
+    std::fs::create_dir_all(&runtime_dir)?;
+    std::fs::write(runtime_dir.join("nexus.py"), PY_RUNTIME)?;
+    let py = find_python(python.as_deref())?;
+
+    let mut cmd = Command::new(&py[0]);
+    cmd.args(&py[1..])
+        .args(["-u", "-X", "utf8", "-c", "import sys, nexus; nexus._main(sys.argv[1])"])
+        .arg(&script)
+        .current_dir(&dir)
+        .env("PYTHONPATH", &runtime_dir)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("NEXUS_PLUGIN_ID", &id)
+        .env("NEXUS_DATA_DIR", &state.data_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_window(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| AppError::msg(format!("Python konnte nicht gestartet werden: {}", AppError::from(e))))?;
+    let stdin = child.stdin.take().ok_or_else(|| AppError::msg("Python: keine Eingabe"))?;
+    let stdout = child.stdout.take().ok_or_else(|| AppError::msg("Python: keine Ausgabe"))?;
+    let stderr = child.stderr.take().ok_or_else(|| AppError::msg("Python: keine Fehlerausgabe"))?;
+    let pid = child.id();
+    PY_PROCS.lock().map_err(|_| AppError::msg("Plugin-Verwaltung blockiert"))?.insert(id.clone(), PyProc { child, stdin });
+
+    {
+        let (app, id) = (app.clone(), id.clone());
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = app.emit("plugin-py://message", PyMessage { id: id.clone(), line: Some(line), stderr: None, exit: None });
+            }
+            // Ausgabe beendet → Prozess ist vorbei. Nur melden, wenn er nicht absichtlich beendet wurde.
+            let code = PY_PROCS.lock().ok().and_then(|mut g| match g.get_mut(&id) {
+                Some(p) if p.child.id() == pid => {
+                    let c = p.child.wait().ok().and_then(|s| s.code());
+                    g.remove(&id);
+                    Some(c.unwrap_or(-1))
+                }
+                _ => None,
+            });
+            if let Some(code) = code {
+                log::warn!("Python-Plugin {id} hat sich beendet (Code {code})");
+                let _ = app.emit("plugin-py://message", PyMessage { id, line: None, stderr: None, exit: Some(code) });
+            }
+        });
+    }
+    {
+        let (app, id) = (app.clone(), id.clone());
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                log::info!("[Plugin {id}] {line}");
+                let _ = app.emit("plugin-py://message", PyMessage { id: id.clone(), line: None, stderr: Some(line), exit: None });
+            }
+        });
+    }
+    log::info!("Python-Plugin {id} gestartet ({})", py.join(" "));
+    Ok(py.join(" "))
+}
+
+#[tauri::command(async)]
+pub fn plugin_py_send(id: String, line: String) -> Cmd<()> {
+    let mut g = PY_PROCS.lock().map_err(|_| AppError::msg("Plugin-Verwaltung blockiert"))?;
+    let p = g.get_mut(&id).ok_or_else(|| AppError::msg("Das Python-Plugin läuft nicht"))?;
+    p.stdin.write_all(line.as_bytes())?;
+    p.stdin.write_all(b"\n")?;
+    p.stdin.flush()?;
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn plugin_py_stop(id: String) {
+    stop_python(&id);
 }

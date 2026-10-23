@@ -258,6 +258,10 @@ export type PluginManifest = {
   description?: string;
   author?: string;
   main?: string;
+  /** "python" für Python-Plugins (sonst anhand der Endung von main erkannt) */
+  runtime?: "js" | "python";
+  /** Pfad zu python.exe (optional) */
+  python?: string;
   styles?: string[];
   defaultEnabled?: boolean;
   homepage?: string;
@@ -366,7 +370,10 @@ export const api = {
   pluginReadFile: (id: string, path: string) => invoke<string>("plugin_read_file", { id, path }),
   pluginInstall: (path: string) => invoke<string>("plugin_install", { path }),
   pluginUninstall: (id: string) => invoke<void>("plugin_uninstall", { id }),
-  pluginCreate: (name: string) => invoke<string>("plugin_create", { name }),
+  pluginCreate: (name: string, lang: "js" | "py" = "js") => invoke<string>("plugin_create", { name, lang }),
+  pluginPyStart: (id: string, main: string, python?: string) => invoke<string>("plugin_py_start", { id, main, python }),
+  pluginPySend: (id: string, line: string) => invoke<void>("plugin_py_send", { id, line }),
+  pluginPyStop: (id: string) => invoke<void>("plugin_py_stop", { id }),
   pluginStorageGet: (id: string) => invoke<Record<string, unknown>>("plugin_storage_get", { id }),
   pluginStorageSet: (id: string, key: string, value: unknown) => invoke<void>("plugin_storage_set", { id, key, value: value ?? null }),
   pluginHttp: (req: { url: string; method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }) =>

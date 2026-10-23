@@ -685,7 +685,10 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 .plugin-card.on .plugin-ic { background: var(--accent-soft); color: var(--accent-2); }
 .plugin-name { font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .plugin-name .tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-3); }
-.plugin-name .tag.ext { background: var(--accent-soft); color: var(--accent-2); }
+.plugin-name .tag.js { background: rgba(250, 204, 21, .14); color: #facc15; }
+.plugin-name .tag.python { background: rgba(59, 130, 246, .16); color: #60a5fa; }
+.py-ic { font-weight: 800; font-size: 13px; letter-spacing: -.02em; }
+.plugin-html { display: contents; }
 .plugin-body { border-top: 1px solid var(--border); background: var(--surface); }
 .plugin-body .setting { padding: 12px 16px; }
 .plugin-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px 68px; }

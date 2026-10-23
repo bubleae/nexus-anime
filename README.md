@@ -31,7 +31,7 @@ Ordner und Videos lassen sich auch per Drag-and-drop aus dem Windows-Explorer in
 | Windows | Im Standardplayer öffnen, im Explorer anzeigen (Datei markiert), Ordner öffnen, Pfad kopieren, Dateieigenschaften inkl. MKV-Spuren |
 | Player | Play/Pause, ±10 s, Lautstärke, Geschwindigkeit, Vollbild, Fortsetzen, „Nächste Folge“ mit Countdown, Untertitel (SRT/ASS/VTT neben der Datei, eingebettete MKV-Textuntertitel, eigene Datei laden), Audiospuren, frei belegbare Tastenkürzel |
 | Dateiverwaltung | Optionaler Bibliotheksordner (`Serie\Staffel 01\Serie - S01E01.mp4`), Kopieren oder Verschieben **nur nach Vorschau**, nie überschreiben, Datenbank-Backup vorher; Löschen einer Datei nur über den Papierkorb mit Eingabe des Dateinamens |
-| Plugins | Eigene JavaScript-Plugins (Seiten, Menüeinträge, Startseiten-Bereiche, Player-Knöpfe, Tastenkürzel, Themes, Ereignisse, HTTP, Dateien, Programme, SQL) und eingebaute Plugins, alle unter **Einstellungen → Plugins** schaltbar – Anleitung in [PLUGINS.md](PLUGINS.md) |
+| Plugins | Eigene Plugins in JavaScript oder Python (Seiten, Menüeinträge, Startseiten-Bereiche, Player-Knöpfe, Tastenkürzel, Themes, Ereignisse, HTTP, Dateien, Programme, SQL) und eingebaute Plugins, alle unter **Einstellungen → Plugins** schaltbar – Anleitung in [PLUGINS.md](PLUGINS.md) |
 | Daten | SQLite-Datenbank, Backup/Wiederherstellen, JSON-Export/-Import, Cache-Verwaltung, Protokolle, Diagnose; keine Telemetrie |
 
 ## Tastenkürzel im Player (Standard)
