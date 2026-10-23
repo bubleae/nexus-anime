@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NEXUS ANIME",
+  "version": "1.0.0",
+  "identifier": "de.nexus.anime",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "NEXUS ANIME",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#08080b",
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-blink-features=AudioVideoTracks --autoplay-policy=no-user-gesture-required"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Persönliche Anime-Bibliothek",
+    "longDescription": "NEXUS ANIME verwaltet lokale Anime-Videodateien als elegante Bibliothek mit integriertem Player.",
+    "windows": {
+      "nsis": {
+        "languages": [
+          "German"
+        ],
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
+      },
+      "wix": {
+        "language": "de-DE"
+      }
+    },
+    "publisher": "NEXUS ANIME",
+    "copyright": "© 2026"
+  }
+}

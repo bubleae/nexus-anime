@@ -1,0 +1,38 @@
+[package]
+name = "nexus-anime"
+version = "1.0.0"
+description = "NEXUS ANIME – persönliche Anime-Bibliothek"
+edition = "2021"
+
+[lib]
+name = "nexus_anime_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+notify = "6"
+strsim = "0.11"
+trash = "5"
+log = "0.4"
+chrono = "0.4"
+matroska-demuxer = "0.7"
+percent-encoding = "2"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
