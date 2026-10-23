@@ -11,6 +11,7 @@ import type { Route, MenuItem, Toast } from "../store";
 import { Modal } from "../components/ui";
 import { episodeCode, episodeTitle, formatBytes, formatDate, formatDuration, relativeTime } from "../format";
 import { t } from "../i18n";
+import type { StreamSpec } from "../player/stream";
 
 // ---------------------------------------------------------------------------
 // Typen der Erweiterungspunkte
@@ -44,9 +45,24 @@ export type MenuContribution<T> = Owned & {
 export type HomeSectionContribution = Owned & ViewSpec<{ series: Series[] }> & { id: string; title?: string; position?: "top" | "bottom" };
 export type PlayerButtonContribution = Owned & { label: string; icon?: string; onClick: (ctx: PlayerContext) => void };
 export type SettingsContribution = Owned & ViewSpec<Record<string, never>>;
+/** Suchquelle für „Entdecken“: liefert Treffer (JSON) und optional Details mit Episoden. */
+export type DiscoverSourceContribution = Owned & {
+  id: string;
+  name: string;
+  icon?: string;
+  /** Treffer für einen Suchbegriff: Liste von Objekten mit mindestens `id` und `title` */
+  search: (query: string) => unknown;
+  /** Details zu einem Treffer (Banner, Beschreibung, `episodes` …). Fehlt sie, wird der Treffer selbst verwendet. */
+  details?: (item: unknown) => unknown;
+};
 export type ShortcutContribution = Owned & { key: string; ctrl?: boolean; shift?: boolean; alt?: boolean; inPlayer?: boolean; run: (e: KeyboardEvent) => void };
 
-export type PlayerContext = { episode: Episode; series: Series | null; video: HTMLVideoElement | null };
+export type PlayerContext = { episode: Episode; series: Series | null; video: HTMLVideoElement | null; stream?: StreamSpec | null; time?: number };
+/**
+ * Findet zu einem Link, der kein direktes Video ist (z. B. eine Webseite), die eigentliche Quelle.
+ * `resolve` gibt eine Stream-Beschreibung ({ url, type?, title?, subtitles?, page?, headers? }) zurück oder null.
+ */
+export type StreamResolverContribution = Owned & { id: string; name: string; resolve: (url: string) => unknown };
 
 type Registry = {
   pages: PageContribution[];
@@ -56,6 +72,8 @@ type Registry = {
   playerButtons: PlayerButtonContribution[];
   settings: SettingsContribution[];
   shortcuts: ShortcutContribution[];
+  discoverSources: DiscoverSourceContribution[];
+  streamResolvers: StreamResolverContribution[];
 };
 
 export type PluginStatus = {
@@ -90,6 +108,7 @@ export type StoreBridge = {
   closeDialog: () => void;
   openMenu: (e: { clientX: number; clientY: number }, items: MenuItem[]) => void;
   play: (episodeId: string) => void;
+  playStream: (spec: StreamSpec) => void;
   closePlayer: () => void;
   bump: () => void;
 };
@@ -98,7 +117,7 @@ export type StoreBridge = {
 // Zustand
 // ---------------------------------------------------------------------------
 
-const EMPTY: Registry = { pages: [], episodeMenu: [], seriesMenu: [], homeSections: [], playerButtons: [], settings: [], shortcuts: [] };
+const EMPTY: Registry = { pages: [], episodeMenu: [], seriesMenu: [], homeSections: [], playerButtons: [], settings: [], shortcuts: [], discoverSources: [], streamResolvers: [] };
 let registry: Registry = EMPTY;
 let statuses: PluginStatus[] = [];
 let snapshot = { registry, statuses };
@@ -184,6 +203,9 @@ export type PlayerControls = {
   close: () => void;
   osd: (text: string) => void;
 };
+/** Aktive Stream-Resolver in Reihenfolge der Plugins. */
+export const streamResolvers = () => registry.streamResolvers;
+
 export const setPlayer = (p: typeof player) => {
   player = p;
 };
@@ -299,6 +321,10 @@ function createNexus(info: { id: string; manifest: PluginManifest; builtin: bool
       menu: (e: { clientX: number; clientY: number }, items: ({ label: string; icon?: string; danger?: boolean; disabled?: boolean; onClick: () => void } | { divider: true } | { title: string })[]) =>
         store().openMenu(e, items.map((it) => ("label" in it ? { ...it, icon: iconNode(it.icon) } : it)) as MenuItem[]),
     },
+    /** Suchquellen für die Seite „Entdecken“ */
+    discover: {
+      addSource: (s: Omit<DiscoverSourceContribution, keyof Owned>) => own("discoverSources", s),
+    },
     library: {
       series: () => store().series,
       seriesById: (sid: string) => store().series.find((s) => s.id === sid) ?? null,
@@ -309,6 +335,10 @@ function createNexus(info: { id: string; manifest: PluginManifest; builtin: bool
       refresh: () => store().bump(),
     },
     player: {
+      /** Spielt einen eigenen Stream-Link (http/https: MP4, WebM, MKV oder HLS .m3u8) im integrierten Player. */
+      playUrl: (url: string, opts?: Omit<StreamSpec, "url">) => store().playStream({ ...(opts ?? {}), url }),
+      /** Resolver für Links, die kein direktes Video sind (siehe StreamResolverContribution). */
+      addResolver: (r: Omit<StreamResolverContribution, keyof Owned>) => own("streamResolvers", r),
       current: () => (player ? { ...player.ctx } : null),
       play: () => player?.controls.play(),
       pause: () => player?.controls.pause(),

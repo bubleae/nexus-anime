@@ -1,0 +1,6 @@
+customtkinter>=5.2
+httpx>=0.27
+Pillow>=10.0
+# Player-Backend: mindestens eines davon (mpv wird bevorzugt)
+python-mpv>=1.0   # braucht libmpv-2.dll (Windows) bzw. libmpv im Systempfad
+python-vlc>=3.0   # braucht eine installierte VLC (gleiche Bitness wie Python)

@@ -1,5 +1,6 @@
-import { Check, Copy, Edit3, EyeOff, ExternalLink, FileText, FolderInput, FolderOpen, Link2, Link2Off, Play, Trash2, Undo2 } from "lucide-react";
+import { Check, Copy, Edit3, EyeOff, ExternalLink, FileText, FolderInput, FolderOpen, Globe, Link2, Link2Off, Play, Trash2, Undo2 } from "lucide-react";
 import { api, Episode } from "../api";
+import { linkSources, resolveEpisodeLink } from "../player/linkSources";
 import { MenuItem, useStore } from "../store";
 import { t } from "../i18n";
 import { episodeCode, episodeTitle } from "../format";
@@ -8,7 +9,7 @@ import { AssignDialog, DeleteFileDialog, EditEpisodeDialog, PropertiesDialog } f
 
 /** Liefert das Aktionsmenü einer Episode – echte Windows-Aktionen, keine Platzhalter. */
 export function useEpisodeMenu(onChanged: () => void) {
-  const { play, toast, fail, openDialog } = useStore();
+  const { play, playStream, toast, fail, openDialog, series } = useStore();
   const { registry } = usePlugins();
   const run = (p: Promise<unknown>, ok?: string) =>
     p.then(() => {
@@ -16,11 +17,23 @@ export function useEpisodeMenu(onChanged: () => void) {
       onChanged();
     }).catch(fail);
 
+  const playViaLink = (e: Episode) => {
+    toast("info", t("links.searching"));
+    resolveEpisodeLink(e, series.find((s) => s.id === e.seriesId) ?? null)
+      .then((r) => {
+        if (r.spec) playStream(r.spec);
+        else toast("error", t("links.notFound"), r.tried.length ? r.tried.join("\n") : t("links.noneActive"));
+      })
+      .catch(fail);
+  };
+
   return (e: Episode): MenuItem[] => {
     const playable = e.available && !e.missing;
+    const hasLinks = linkSources().some((s) => s.enabled);
     const items: MenuItem[] = [
       { title: `${episodeCode(e)} · ${episodeTitle(e)}` },
       { label: t("ep.play"), icon: <Play size={16} />, onClick: () => play(e.id), disabled: !playable },
+      { label: t("links.play"), icon: <Globe size={16} />, onClick: () => playViaLink(e), disabled: !hasLinks || e.episode == null },
       { label: t("ep.openDefault"), icon: <ExternalLink size={16} />, onClick: () => api.openDefault(e.id).then(onChanged).catch(fail) },
       { label: t("ep.reveal"), icon: <FolderInput size={16} />, onClick: () => api.reveal(e.id).catch(fail) },
       { label: t("ep.openFolder"), icon: <FolderOpen size={16} />, onClick: () => api.openEpisodeFolder(e.id).catch(fail) },

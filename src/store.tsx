@@ -5,6 +5,7 @@ import { api, Bootstrap, errorText, OpProgress, ScanProgress, Series, Settings, 
 import { setLanguage, t } from "./i18n";
 import { emit, registerBuiltins, reloadPlugins, setAppInfo, setStoreBridge } from "./plugins/host";
 import { BUILTIN_PLUGINS } from "./plugins/builtin";
+import { normalizeStreamUrl, StreamSpec } from "./player/stream";
 
 export type RouteName =
   | "home"
@@ -64,7 +65,10 @@ type Store = {
   fileOp: OpProgress | null;
   clearFileOp: () => void;
   playing: string | null;
+  /** Gesetzt, wenn gerade ein eigener Stream-Link läuft (dann ist `playing` "stream:…") */
+  stream: StreamSpec | null;
   play: (episodeId: string) => void;
+  playStream: (spec: StreamSpec) => void;
   closePlayer: () => void;
 };
 
@@ -88,6 +92,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [metadataBusy, setMetadataBusy] = useState(false);
   const [fileOp, setFileOp] = useState<OpProgress | null>(null);
   const [playing, setPlaying] = useState<string | null>(null);
+  const [stream, setStream] = useState<StreamSpec | null>(null);
+  const streamSeq = useRef(0);
   const [ready, setReady] = useState(false);
   const toastId = useRef(0);
   const settingsRef = useRef(settings);
@@ -302,16 +308,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       fileOp,
       clearFileOp: () => setFileOp(null),
       playing,
+      stream,
       play: (id) => {
         setMenu(null);
+        setStream(null);
         setPlaying(id);
       },
+      playStream: (spec) => {
+        const url = normalizeStreamUrl(spec.url);
+        setMenu(null);
+        setDialog(null);
+        setStream({ ...spec, url });
+        setPlaying(`stream:${++streamSeq.current}`);
+      },
       closePlayer: () => {
+        const wasStream = stream != null;
         setPlaying(null);
-        bump();
+        setStream(null);
+        if (!wasStream) bump();
       },
     }),
-    [ready, boot, settings, updateSettings, sources, reloadSources, series, reloadSeries, counts, reloadCounts, dataVersion, bump, route, navigate, back, history.length, toast, toasts, dismissToast, fail, dialog, menu, scan, metadataBusy, fileOp, playing],
+    [ready, boot, settings, updateSettings, sources, reloadSources, series, reloadSeries, counts, reloadCounts, dataVersion, bump, route, navigate, back, history.length, toast, toasts, dismissToast, fail, dialog, menu, scan, metadataBusy, fileOp, playing, stream],
   );
 
   // Plugins greifen über diese Brücke auf den aktuellen Zustand zu
@@ -327,6 +344,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     closeDialog: value.closeDialog,
     openMenu: value.openMenu,
     play: value.play,
+    playStream: value.playStream,
     closePlayer: value.closePlayer,
     bump,
   });

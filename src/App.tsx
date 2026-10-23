@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy as CopyIcon, FolderDown, Inbox, Layers, Minus, RefreshCw, Search, Settings, Square, X,
+  AlertTriangle, ArrowLeft, CheckCircle2, Radio, ChevronDown, Copy as CopyIcon, FolderDown, Inbox, Layers, Minus, RefreshCw, Search, Settings, Square, X,
 } from "lucide-react";
 import { api } from "./api";
 import { RouteName, useStore } from "./store";
@@ -16,6 +16,7 @@ import { SettingsPage } from "./pages/Settings";
 import { Discover } from "./pages/Discover";
 import { Player } from "./player/Player";
 import { PluginPage } from "./pages/Plugins";
+import { StreamDialog } from "./components/StreamDialog";
 import { handlePluginShortcut, iconNode, usePlugins } from "./plugins/host";
 
 function TitleBar() {
@@ -54,7 +55,7 @@ const NAV: { name: RouteName; label: TKey; long?: boolean }[] = [
 ];
 
 function TopNav() {
-  const { route, navigate, back, canGoBack, counts, scan, openMenu, fail, toast } = useStore();
+  const { route, navigate, back, canGoBack, counts, scan, openMenu, fail, toast, openDialog } = useStore();
   const scanning = !!scan?.running;
   const { registry } = usePlugins();
   const isPluginPage = (pluginId: string, id: string) => route.name === "plugin" && route.params?.plugin === pluginId && route.params?.page === id;
@@ -92,6 +93,8 @@ function TopNav() {
               { label: `${t("nav.unsorted")}${counts.unsorted ? ` (${counts.unsorted})` : ""}`, icon: <Inbox size={16} />, onClick: () => navigate({ name: "unsorted" }) },
               { label: `${t("nav.unavailable")}${counts.unavailable ? ` (${counts.unavailable})` : ""}`, icon: <AlertTriangle size={16} />, onClick: () => navigate({ name: "unavailable" }) },
               { label: t("nav.duplicates"), icon: <Layers size={16} />, onClick: () => navigate({ name: "duplicates" }) },
+              { divider: true },
+              { label: t("stream.menu"), icon: <Radio size={16} />, onClick: () => openDialog(<StreamDialog />) },
               ...(morePages.length
                 ? [
                     { divider: true as const },
@@ -251,7 +254,7 @@ function Page() {
 }
 
 export default function App() {
-  const { ready, dialog, playing, route, settings } = useStore();
+  const { ready, dialog, playing, stream, route, settings } = useStore();
   const { over: dropping, targetSeries: dropSeries } = useExplorerDrop();
   // Globale Kurzbefehle: Strg+F = Suche
   const { navigate } = useStore();
@@ -283,7 +286,7 @@ export default function App() {
           <FileOpCard />
         </>
       )}
-      {playing && <Player key={playing} episodeId={playing} />}
+      {playing && <Player key={playing} episodeId={stream ? null : playing} stream={stream} />}
       {dialog}
       <ContextMenu />
       <Toasts />

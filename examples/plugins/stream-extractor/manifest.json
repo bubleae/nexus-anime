@@ -1,0 +1,11 @@
+{
+  "id": "stream-extractor",
+  "name": "Stream-Extractor",
+  "version": "1.0.0",
+  "description": "Findet in Webseiten den eigentlichen Video-Link (.m3u8 oder .mp4) und spielt ihn im NEXUS-Player. Dazu ein Knopf, um Streams in mpv oder VLC zu öffnen.",
+  "author": "NEXUS ANIME (Beispiel)",
+  "main": "main.py",
+  "settings": [
+    { "key": "depth", "label": "Eingebettete Player durchsuchen", "type": "number", "default": 2, "description": "Wie viele Ebenen von <iframe>-Playern verfolgt werden (0 = nur die Seite selbst)." }
+  ]
+}

@@ -138,6 +138,40 @@ def angesehen(data):
 
 Einschränkungen: `render`/`mount` (React/DOM) gibt es nur in JavaScript – in Python nimmst du `html`. Menü-Optionen wie `when` oder eine Beschriftung als Funktion (`label=lambda …`) werden nicht unterstützt; `label` ist in Python immer ein Text.
 
+## Suchquellen für „Entdecken“
+
+Ein Plugin kann eine eigene **Suchquelle** anmelden. Die Seite *Entdecken* durchsucht dann AniList und alle aktiven Quellen gleichzeitig und zeigt jede Quelle als eigenen Abschnitt mit Kacheln (oben lässt sich nach Quelle filtern). Ein Klick öffnet eine Detailseite mit Banner, Cover, Beschreibung und Episodenliste; ein Klick auf eine Folge spielt sie im integrierten Player.
+
+```python
+import nexus
+
+def suchen(query):
+    # Liste von Treffern – mindestens id und title
+    return [{"id": "42", "title": "Mein Film", "year": 2024, "cover_url": "https://…/cover.jpg"}]
+
+def details(item):
+    # item ist der Treffer von oben (mit Attributzugriff: item.id, item.title …)
+    return {
+        "description": "…",
+        "banner_url": "https://…/banner.jpg",
+        "episodes": [
+            {"number": 1, "title": "Folge 1", "stream_url": "http://192.168.1.10:8096/…/master.m3u8?api_key=…"},
+        ],
+    }
+
+nexus.discover.add_source(id="meine-quelle", name="Mein Server", icon="📺", search=suchen, details=details)
+```
+
+In JavaScript genauso: `nexus.discover.addSource({ id, name, icon, search: async (q) => [...], details: async (item) => ({...}) })`.
+
+**Felder eines Treffers** (snake_case oder camelCase, alles außer `id`/`title` optional): `id`, `title`, `subtitle`, `description`, `cover_url`, `banner_url`, `year`, `genres`, `url` (Seite im Browser), `episodes` (dann ist `details` nicht nötig). Alle weiteren Felder bleiben erhalten und kommen in `details(item)` wieder an.
+
+**Felder einer Episode:** `number`, `season`, `title`, `description`, `thumbnail`, `duration` (Sekunden), `stream_url` (spielt im Player – MP4/WebM/MKV oder HLS), `url` (öffnet sich im Browser, falls kein `stream_url`), `subtitles` (`[{ "url", "label", "lang" }]`, SRT/VTT).
+
+`details` ergänzt den Treffer: Felder, die es nicht liefert, bleiben aus dem Suchergebnis. Antwortet eine Quelle nicht innerhalb von 30 Sekunden oder wirft sie einen Fehler, erscheint der Fehler nur in ihrem Abschnitt.
+
+Nur Quellen verwenden, die du nutzen darfst (eigener Medienserver, freie Inhalte, Dienste mit offizieller Schnittstelle). Ein fertiges Beispiel für **Jellyfin** liegt im Repository unter [`examples/plugins/jellyfin-quelle`](examples/plugins/jellyfin-quelle) – Ordner über *Einstellungen → Plugins → Ordner installieren* hinzufügen, dann Server und API-Schlüssel eintragen.
+
 ## API-Referenz
 
 ### nexus.ui – Oberfläche
@@ -191,7 +225,51 @@ Eigene Ereignisse: `nexus.events.emit("mein:ereignis", daten)`.
 
 ### nexus.player – laufender Player
 
-`current()` → `{ episode, series, video }` oder `null`; `play()`, `pause()`, `seek(sekunden)`, `next()`, `previous()`, `close()`, `osd(text)`.
+`current()` → `{ episode, series, video, stream }` oder `null`; `play()`, `pause()`, `seek(sekunden)`, `next()`, `previous()`, `close()`, `osd(text)`.
+
+**Eigene Stream-Links abspielen:** `playUrl(url, optionen?)` (Python: `nexus.player.play_url(url, …)`) spielt einen http(s)-Link direkt im integrierten Player – z. B. vom eigenen Jellyfin-, Plex- oder Emby-Server oder einem NAS im Heimnetz.
+
+| Option | Bedeutung |
+|---|---|
+| `title` | Titel im Player |
+| `subtitle` | zweite Zeile, z. B. Serienname |
+| `subtitles` | Liste `[{ url, label?, lang? }]` – SRT oder VTT per Link |
+| `startAt` | Startposition in Sekunden (sonst die gemerkte Position) |
+| `key` | eigener Schlüssel für gemerkte Position und Ereignisse (Standard: die URL) |
+| `type` | `"hls"` oder `"file"` erzwingen (sonst anhand der URL erkannt) |
+| `page` | Webseite, auf der der Link gefunden wurde (für „Webansicht“ und „Im Browser öffnen“) |
+| `headers` | Header, die der Server verlangt (z. B. `Referer`) – nur für externe Player, der integrierte Player kann sie nicht senden |
+
+Unterstützt werden direkte Videodateien (MP4, WebM, MKV mit H.264/AAC u. ä.) und HLS (`.m3u8`). Zugangsschlüssel gehören in den Link (Jellyfin `api_key=…`, Plex `X-Plex-Token=…`). Für HLS muss der Server Zugriffe aus der App erlauben (CORS) – Jellyfin und Plex tun das. Bei Streams enthalten die `player:*`-Ereignisse zusätzlich `stream` (mit `url`, `title`, `key` …); `episode:watched` wird für Streams nicht ausgelöst. Die Position wird nur lokal gemerkt.
+
+Nur Inhalte abspielen, die du nutzen darfst. Seiten von Streaming-Anbietern sind keine direkten Video-Links; kopiergeschützte Streams lassen sich nicht abspielen.
+
+**Webseiten statt Video-Links (Resolver):** Ohne erkennbare Endung (`.mp4`, `.m3u8` …) und ohne `type` lädt der Player zuerst nur den Anfang des Links und erkennt, ob dahinter ein Video, ein HLS-Manifest oder eine HTML-Seite liegt. Bei einer Seite fragt er der Reihe nach die registrierten Resolver:
+
+`addResolver({ id, name, resolve })` (Python: `nexus.player.add_resolver(id=…, name=…, resolve=fn)`) – `resolve(url)` gibt eine Stream-Beschreibung wie bei `playUrl` zurück (`{ url, type?, title?, subtitles?, page?, headers? }`) oder `null`, wenn es nichts gefunden hat. Eine Ausnahme erscheint als Meldung im Player (z. B. „kopiergeschützt“). Höchstens 60 Sekunden je Resolver.
+
+Findet kein Resolver etwas, bietet der Player die **Webansicht** an: Die Seite öffnet sich in einem eigenen Fenster (ohne Zugriff auf die App, Pop-ups gesperrt). Ein Skript in jeder Seite und jedem Frame beobachtet, welche Video-Links der Player der Seite lädt; sie erscheinen im NEXUS-Player zum Abspielen. Dasselbe passiert, wenn ein Link mit dem Fehler „Format nicht unterstützt“ (`MEDIA_ERR_SRC_NOT_SUPPORTED`) scheitert und sich als Webseite herausstellt.
+
+Ein fertiger Resolver in Python liegt unter [`examples/plugins/stream-extractor`](examples/plugins/stream-extractor): Er wertet `<video>`/`<source>`, `og:video`, JSON-LD und Player-Konfigurationen im Skript-Code aus, folgt eingebetteten `<iframe>`-Playern, sendet den passenden `Referer` und lehnt DRM-geschützte Streams ab. Dazu gibt es einen Player-Knopf, der den Stream in **mpv** oder **VLC** öffnet – nützlich, wenn der Server einen Referer verlangt oder CORS sperrt. Tests: `python -m unittest test_extractor` im Plugin-Ordner.
+
+```python
+import nexus
+
+# Jellyfin: direkte Datei (ohne Umwandlung) eines Elements abspielen
+SERVER = "http://192.168.1.10:8096"
+API_KEY = nexus.config.get("apiKey")
+
+def abspielen(item_id, name):
+    nexus.player.play_url(
+        f"{SERVER}/Videos/{item_id}/stream?static=true&api_key={API_KEY}",
+        title=name, subtitle="Jellyfin", key=f"jellyfin:{item_id}",
+    )
+
+@nexus.on("player:close")
+def geschlossen(data):
+    if data.get("stream"):
+        print("Stream beendet bei", round(data.time), "Sekunden:", data.stream.key)
+```
 
 ### nexus.storage / nexus.config
 

@@ -2,10 +2,11 @@
 // speichert regelmäßig die Position, unterstützt Untertitel (extern + MKV-eingebettet), Audiospuren,
 // Geschwindigkeit, Vollbild, Tastatur- und Maussteuerung sowie automatische nächste Folge.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  AlertTriangle, ArrowLeft, Captions, Check, ExternalLink, FolderInput, Gauge, Languages, Maximize, Minimize, Pause, Play,
+  AlertTriangle, AppWindow, ArrowLeft, Captions, Check, ExternalLink, FolderInput, Gauge, Globe, Languages, Maximize, Minimize, Pause, Play,
   RotateCcw, RotateCw, SkipBack, SkipForward, Volume1, Volume2, VolumeX,
 } from "lucide-react";
 import { api, errorText, imageUrl, PlaybackInfo, SubtitleTrack, videoUrl } from "../api";
@@ -13,14 +14,39 @@ import { useStore } from "../store";
 import { t } from "../i18n";
 import { episodeCode, episodeTitle, formatDuration } from "../format";
 import { emit, handlePluginShortcut, iconNode, PlayerControls, setPlayer, usePlugins } from "../plugins/host";
+import { attachHls, fetchSubtitle, isHls, savePosition, StreamSpec, streamKey, streamPlaybackInfo } from "./stream";
+import { isWebPage, resolveStream } from "./resolve";
 
 type AudioTrackLike = { id: string; label: string; language: string; enabled: boolean };
 type Menu = null | "subs" | "audio" | "speed";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
-export function Player({ episodeId }: { episodeId: string }) {
-  const { settings, closePlayer, play, fail, toast } = useStore();
+// Sprachcodes vergleichen: ISO 639-2 („ger“, „deu“) und ISO 639-1 („de“) gelten als gleich
+const LANG_ALIASES: Record<string, string> = { ger: "de", deu: "de", eng: "en", jpn: "ja", fre: "fr", fra: "fr", spa: "es", ita: "it", por: "pt", rus: "ru", chi: "zh", zho: "zh", kor: "ko" };
+const langBase = (l: string) => {
+  const x = l.toLowerCase().split(/[-_]/)[0];
+  return LANG_ALIASES[x] ?? x.slice(0, 2);
+};
+const sameLanguage = (a: string | null | undefined, b: string) => !!a && langBase(a) === langBase(b);
+
+type WebPage = { url: string; message: string };
+type FoundStream = { url: string; page: string };
+
+/**
+ * Spielt eine Episode der Bibliothek (`episodeId`) oder einen eigenen Stream-Link (`stream`).
+ * Stream-Links werden vorher aufgelöst (resolve.ts): Webseiten gehen an die Resolver der Plugins;
+ * findet keiner ein Video, bietet der Player die Webansicht an, die Video-Links der Seite mitschneidet.
+ */
+export function Player({ episodeId, stream: requested }: { episodeId: string | null; stream?: StreamSpec | null }) {
+  const { settings, closePlayer, play, playStream, fail, toast } = useStore();
+  /** der tatsächlich abgespielte Stream (nach dem Auflösen) */
+  const [stream, setStream] = useState<StreamSpec | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [webPage, setWebPage] = useState<WebPage | null>(null);
+  const [found, setFound] = useState<FoundStream[]>([]);
+  const [webOpen, setWebOpen] = useState(false);
+  const webOpened = useRef(false);
   const video = useRef<HTMLVideoElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState<PlaybackInfo | null>(null);
@@ -56,6 +82,7 @@ export function Player({ episodeId }: { episodeId: string }) {
   const markedWatched = useRef(false);
   const { registry } = usePlugins();
   const controls = useRef<PlayerControls | null>(null);
+  const lastPos = useRef<{ time: number; duration: number | null }>({ time: 0, duration: null });
 
   // ---------- Laden ----------
   useEffect(() => {
@@ -71,8 +98,88 @@ export function Player({ episodeId }: { episodeId: string }) {
     setExtraSubs([]);
     setWaiting(true);
     markedWatched.current = false;
-    api.playback(episodeId).then(setInfo).catch((e) => setLoadError(errorText(e)));
-  }, [episodeId]);
+    setStream(null);
+    setWebPage(null);
+    setFound([]);
+    if (requested) {
+      let cancelled = false;
+      setResolving(true);
+      resolveStream(requested)
+        .then((r) => {
+          if (cancelled) return;
+          if (r.kind === "play") {
+            setStream(r.spec);
+            setInfo(streamPlaybackInfo(r.spec));
+          } else {
+            setWaiting(false);
+            setWebPage({ url: r.url, message: r.message });
+          }
+        })
+        .catch((e) => !cancelled && setLoadError(errorText(e)))
+        .finally(() => !cancelled && setResolving(false));
+      return () => {
+        cancelled = true;
+      };
+    } else if (episodeId) api.playback(episodeId).then(setInfo).catch((e) => setLoadError(errorText(e)));
+  }, [episodeId, requested]);
+
+  // Webansicht: Video-Links sammeln, die das Skript in der Seite meldet
+  useEffect(() => {
+    if (!webPage) return;
+    const un = listen<FoundStream>("web-player://found", (e) =>
+      setFound((list) => (list.some((x) => x.url === e.payload.url) ? list : [...list, e.payload])),
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, [webPage]);
+  useEffect(
+    () => () => {
+      if (webOpened.current) api.closeWebPlayer().catch(() => {});
+    },
+    [],
+  );
+  const openWebView = (url: string) => {
+    video.current?.pause();
+    webOpened.current = true;
+    setWebOpen(true);
+    if (!webPage) setWebPage({ url, message: t("stream.webViewRunning") });
+    api.openWebPlayer(url, requested?.title).catch(fail);
+  };
+  const playFound = (f: FoundStream) => {
+    api.closeWebPlayer().catch(() => {});
+    webOpened.current = false;
+    playStream({
+      url: f.url,
+      type: /\.m3u8|[?&](format|container)=m3u8/i.test(f.url) ? "hls" : "file",
+      title: requested?.title,
+      subtitle: requested?.subtitle,
+      subtitles: requested?.subtitles,
+      key: requested ? streamKey(requested) : undefined,
+      page: f.page,
+      headers: { Referer: f.page },
+    });
+  };
+
+  // HLS-Streams (.m3u8) über hls.js, alles andere direkt über das Video-Element
+  useEffect(() => {
+    const v = video.current;
+    if (!stream || !info || !v || !isHls(stream)) return;
+    let cleanup: (() => void) | null = null;
+    let cancelled = false;
+    attachHls(v, stream.url, (msg) => {
+      setWaiting(false);
+      setMediaError(msg);
+    }).then((c) => {
+      if (cancelled) c();
+      else cleanup = c;
+    }).catch((e) => setMediaError(errorText(e)));
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, [stream, info]);
+  const streamEvent = stream ? { stream: { ...stream, key: streamKey(stream) } } : {};
 
   // Fenster-Vollbild gemäß Einstellung
   useEffect(() => {
@@ -104,6 +211,12 @@ export function Player({ episodeId }: { episodeId: string }) {
       if (!v || !info || mediaError) return;
       const pos = v.currentTime;
       if (!finished && pos < 3) return;
+      if (stream) {
+        // Streams gehören nicht zur Bibliothek – Position nur lokal merken
+        savePosition(streamKey(stream), pos, isFinite(v.duration) ? v.duration : null, finished || (isFinite(v.duration) && pos > v.duration - 20));
+        lastSaved.current = Date.now();
+        return;
+      }
       api.saveProgress(info.episode.id, pos, isFinite(v.duration) ? v.duration : null, finished)
         .then((watched) => {
           if (watched && !markedWatched.current) {
@@ -126,7 +239,7 @@ export function Player({ episodeId }: { episodeId: string }) {
   // ---------- Plugins ----------
   useEffect(() => {
     if (!info) return;
-    const ctx = { episode: info.episode, series: info.series, video: video.current };
+    const ctx = { episode: info.episode, series: info.series, video: video.current, stream };
     setPlayer({
       ctx,
       controls: {
@@ -139,11 +252,11 @@ export function Player({ episodeId }: { episodeId: string }) {
         osd: (text) => controls.current?.osd(text),
       },
     });
-    emit("player:open", { episode: info.episode, series: info.series });
+    emit("player:open", { episode: info.episode, series: info.series, ...streamEvent });
     return () => {
-      const v = video.current;
+      // Das Video-Element ist hier oft schon entfernt – daher die zuletzt bekannte Position melden
       setPlayer(null);
-      emit("player:close", { episode: info.episode, series: info.series, time: v?.currentTime ?? 0, duration: v && isFinite(v.duration) ? v.duration : null });
+      emit("player:close", { episode: info.episode, series: info.series, ...lastPos.current, ...streamEvent });
     };
   }, [info]);
 
@@ -160,7 +273,10 @@ export function Player({ episodeId }: { episodeId: string }) {
         let vtt: string;
         const extra = extraSubs.find((x) => x.id === id);
         if (extra) vtt = extra.vtt;
-        else {
+        else if (stream && id.startsWith("stream:")) {
+          setSubLoading(true);
+          vtt = await fetchSubtitle(stream.subtitles![Number(id.slice(7))].url);
+        } else {
           setSubLoading(true);
           vtt = await api.subtitle(info.episode.id, id);
         }
@@ -172,7 +288,7 @@ export function Player({ episodeId }: { episodeId: string }) {
         setSubLoading(false);
       }
     },
-    [info, extraSubs, subUrl, toast],
+    [info, extraSubs, subUrl, toast, stream],
   );
   // Bevorzugte Untertitelsprache automatisch wählen
   useEffect(() => {
@@ -180,8 +296,10 @@ export function Player({ episodeId }: { episodeId: string }) {
     const pref = settings.preferredSubtitleLang;
     const supported = info.subtitles.filter((s) => s.supported);
     const match =
-      supported.find((s) => pref && s.language?.toLowerCase().startsWith(pref.slice(0, 2))) ??
+      supported.find((s) => pref && sameLanguage(s.language, pref)) ??
       supported.find((s) => s.source === "external" && !pref) ??
+      // Bei Stream-Links ohne Sprachangabe den ersten mitgegebenen Untertitel nehmen
+      (stream ? supported.find((s) => s.default && !s.language) : undefined) ??
       null;
     if (match) loadSub(match.id);
   }, [info]);
@@ -414,15 +532,16 @@ export function Player({ episodeId }: { episodeId: string }) {
   const onTimeUpdate = () => {
     const v = video.current!;
     if (!seekDrag) setTime(v.currentTime);
+    lastPos.current = { time: v.currentTime, duration: isFinite(v.duration) ? v.duration : null };
     if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
     if (Date.now() - lastSaved.current > 5000 && !v.paused) {
       save();
-      if (info) emit("player:progress", { episode: info.episode, series: info.series, time: v.currentTime, duration: isFinite(v.duration) ? v.duration : null });
+      if (info) emit("player:progress", { episode: info.episode, series: info.series, time: v.currentTime, duration: isFinite(v.duration) ? v.duration : null, ...streamEvent });
     }
   };
   const onEnded = () => {
     save(true);
-    if (info) emit("player:ended", { episode: info.episode, series: info.series });
+    if (info) emit("player:ended", { episode: info.episode, series: info.series, ...streamEvent });
     setPlaying(false);
     if (info?.nextId && settings.autoNext && settings.endBehavior !== "stop") {
       if (settings.endBehavior === "next") goNext();
@@ -435,6 +554,10 @@ export function Player({ episodeId }: { episodeId: string }) {
     setWaiting(false);
     setMediaError(code === 3 ? t("player.errorDecode") : code === 4 ? t("player.errorFormat") : code === 2 ? t("player.errorNetwork") : t("player.errorGeneric"));
     api.log("warn", `Wiedergabefehler ${code} (${err?.message}) für ${info?.episode.filePath}`);
+    // MEDIA_ERR_SRC_NOT_SUPPORTED bei einem Stream: oft eine Webseite statt eines Videos
+    if (stream && code === 4 && !stream.type) {
+      isWebPage(stream.url).then((page) => page && setWebPage({ url: stream.url, message: t("stream.pageNotVideo") }));
+    }
   };
 
   // ---------- Fortschrittsleiste ----------
@@ -498,8 +621,8 @@ export function Player({ episodeId }: { episodeId: string }) {
       {info && !loadError && (
         <video
           ref={video}
-          src={videoUrl(info.episode.id)}
-          crossOrigin="anonymous"
+          src={stream ? (isHls(stream) ? undefined : stream.url) : videoUrl(info.episode.id)}
+          crossOrigin={stream ? undefined : "anonymous"}
           onLoadedMetadata={onLoadedMetadata}
           onTimeUpdate={onTimeUpdate}
           onDurationChange={() => setDuration(video.current?.duration ?? 0)}
@@ -519,7 +642,7 @@ export function Player({ episodeId }: { episodeId: string }) {
 
       <div ref={cueBox} className={`cues ${idle && playing && !menu ? "" : "raised"}`} />
 
-      {(waiting || subLoading) && !mediaError && !loadError && (
+      {(waiting || subLoading) && !mediaError && !loadError && !webPage && (
         <div className="p-loading"><div className="spinner lg" /></div>
       )}
       {flash && (
@@ -527,6 +650,7 @@ export function Player({ episodeId }: { episodeId: string }) {
       )}
       {osd && <div className="p-osd">{osd}</div>}
       {subLoading && <div className="p-osd" style={{ top: 140 }}>{t("player.loadingSubtitle")}</div>}
+      {resolving && <div className="p-osd" style={{ top: 140 }}>{t("stream.resolving")}</div>}
 
       {/* Oben */}
       <div className="player-top">
@@ -534,36 +658,70 @@ export function Player({ episodeId }: { episodeId: string }) {
         <div className="ttl">
           {ep && (
             <>
-              <div className="s">{ep.seriesTitle ?? ep.fileName} · {episodeCode(ep)}</div>
+              <div className="s">{stream ? (ep.seriesTitle ?? t("stream.label")) : `${ep.seriesTitle ?? ep.fileName} · ${episodeCode(ep)}`}</div>
               <div className="e">{episodeTitle(ep)}</div>
             </>
           )}
         </div>
-        {ep && !ep.watched && !markedWatched.current && (
+        {ep && !stream && !ep.watched && !markedWatched.current && (
           <button className="btn glass small" onClick={markWatched}><Check size={15} /> {t("player.markWatched")}</button>
         )}
         {ep && (
-          <button className="btn glass small" onClick={() => { video.current?.pause(); api.openDefault(ep.id).catch(fail); }}>
-            <ExternalLink size={15} /> {t("player.openExternal")}
+          <button className="btn glass small" onClick={() => { video.current?.pause(); (stream ? api.openLink(stream.url) : api.openDefault(ep.id)).catch(fail); }}>
+            <ExternalLink size={15} /> {stream ? t("stream.openBrowser") : t("player.openExternal")}
           </button>
         )}
       </div>
 
       {/* Fehler */}
-      {(loadError || mediaError) && (
+      {(loadError || mediaError) && !webPage && (
         <div className="p-card p-error">
           <AlertTriangle size={40} color="var(--warning)" />
           <h3>{t("player.errorTitle")}</h3>
           <p style={{ whiteSpace: "pre-line" }}>{loadError ?? mediaError}</p>
-          <p className="hint" style={{ color: "rgba(255,255,255,.5)" }}>{t("player.errorHint")}</p>
+          <p className="hint" style={{ color: "rgba(255,255,255,.5)" }}>{stream ? t("stream.errorHint") : t("player.errorHint")}</p>
           {ep && <p style={{ fontSize: 12, color: "rgba(255,255,255,.45)", wordBreak: "break-all" }}>{ep.filePath}</p>}
           <div className="btn-row" style={{ justifyContent: "center", marginTop: 18 }}>
-            {!loadError && ep && (
+            {!loadError && ep && stream?.page && (
+              <button className="btn primary" onClick={() => openWebView(stream.page!)}><AppWindow size={16} /> {t("stream.webView")}</button>
+            )}
+            {!loadError && ep && stream && (
+              <button className={`btn ${stream.page ? "glass" : "primary"}`} onClick={() => api.openLink(stream.page ?? stream.url).catch(fail)}><ExternalLink size={16} /> {t("stream.openBrowser")}</button>
+            )}
+            {!loadError && ep && !stream && (
               <>
                 <button className="btn primary" onClick={() => api.openDefault(ep.id).catch(fail)}><ExternalLink size={16} /> {t("player.openExternal")}</button>
                 <button className="btn glass" onClick={() => api.reveal(ep.id).catch(fail)}><FolderInput size={16} /> {t("ep.reveal")}</button>
               </>
             )}
+            <button className="btn glass" onClick={close}>{t("common.close")}</button>
+          </div>
+        </div>
+      )}
+
+      {/* Webseite statt Video: Webansicht als Ausweg */}
+      {webPage && (
+        <div className="p-card p-error">
+          <Globe size={40} color="var(--accent)" />
+          <h3>{t("stream.pageTitle")}</h3>
+          <p style={{ whiteSpace: "pre-line" }}>{webPage.message}</p>
+          <p style={{ fontSize: 12, color: "rgba(255,255,255,.45)", wordBreak: "break-all" }}>{webPage.url}</p>
+          {found.length > 0 && (
+            <div className="p-found">
+              <div className="label">{t("stream.found")}</div>
+              {found.map((f) => (
+                <button key={f.url} className="p-found-item" onClick={() => playFound(f)} title={f.url}>
+                  <Play size={15} fill="currentColor" />
+                  <span className="k">{/\.m3u8/i.test(f.url) ? "HLS" : "Video"}</span>
+                  <span className="u">{f.url}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {webOpen && found.length === 0 && <p className="hint" style={{ color: "rgba(255,255,255,.6)" }}>{t("stream.webViewHint")}</p>}
+          <div className="btn-row" style={{ justifyContent: "center", marginTop: 18 }}>
+            <button className="btn primary" onClick={() => openWebView(webPage.url)}><AppWindow size={16} /> {t("stream.webView")}</button>
+            <button className="btn glass" onClick={() => api.openLink(webPage.url).catch(fail)}><ExternalLink size={16} /> {t("stream.openBrowser")}</button>
             <button className="btn glass" onClick={close}>{t("common.close")}</button>
           </div>
         </div>
@@ -693,7 +851,7 @@ export function Player({ episodeId }: { episodeId: string }) {
               title={b.label}
               onClick={() => {
                 try {
-                  b.onClick({ episode: info.episode, series: info.series, video: video.current });
+                  b.onClick({ episode: info.episode, series: info.series, video: video.current, stream, time: video.current?.currentTime });
                 } catch (e) {
                   fail(e);
                 }

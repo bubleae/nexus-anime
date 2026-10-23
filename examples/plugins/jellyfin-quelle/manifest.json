@@ -1,0 +1,13 @@
+{
+  "id": "jellyfin-quelle",
+  "name": "Jellyfin",
+  "version": "1.0.0",
+  "description": "Durchsucht deinen eigenen Jellyfin-Server unter „Entdecken“ und spielt Serien und Filme direkt im NEXUS-Player.",
+  "author": "NEXUS ANIME (Beispiel)",
+  "main": "main.py",
+  "settings": [
+    { "key": "server", "label": "Server-Adresse", "type": "string", "default": "http://localhost:8096", "description": "z. B. http://192.168.1.10:8096" },
+    { "key": "apiKey", "label": "API-Schlüssel", "type": "string", "description": "Jellyfin → Dashboard → API-Schlüssel → „+“" },
+    { "key": "transcode", "label": "Für den Player umwandeln (HLS)", "type": "boolean", "default": true, "description": "Empfohlen. Aus = Originaldatei (klappt nur bei Formaten, die der Player direkt kann)." }
+  ]
+}

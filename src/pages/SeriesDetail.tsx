@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Check, CheckCheck, ChevronDown, Combine, Copy, Edit3, ExternalLink, EyeOff, FilePlus2, Link as LinkIcon, FolderOpen, FolderPlus, GripVertical, Heart, ImageOff, Link2,
+  Check, CheckCheck, ChevronDown, Combine, Copy, Edit3, ExternalLink, EyeOff, FilePlus2, Globe, Link as LinkIcon, FolderOpen, FolderPlus, GripVertical, Heart, ImageOff, Link2,
   ListChecks, MoreHorizontal, MoveRight, Play, RefreshCw, Search, Trash2, Undo2, X,
 } from "lucide-react";
 import { api, Episode, imageUrl, SeriesDetail as Detail } from "../api";
@@ -10,6 +10,8 @@ import { t } from "../i18n";
 import { episodeCode, episodeTitle, formatBytes, formatDuration, formatMinutes, progressOf } from "../format";
 import { Cover, Empty, fallbackGradient, Loading, menuButton, ProgressBar } from "../components/ui";
 import { useEpisodeMenu } from "../components/episodeMenu";
+import { LinkPlayDialog } from "../components/LinkPlayDialog";
+import { useLinkSources } from "../player/linkSources";
 import { AddLinkDialog, AssignDialog, EditSeriesDialog, FileOpsDialog, MergeSeriesDialog, MetadataDialog, PromptDialog, RemoveSeriesDialog } from "../components/dialogs";
 import { requestThumbnail } from "../thumbs";
 import { pluginMenuItems, usePlugins } from "../plugins/host";
@@ -144,6 +146,7 @@ export function SeriesDetail({ id }: { id: string }) {
   const [overRow, setOverRow] = useState<string | null>(null);
   const [overTab, setOverTab] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const hasLinkSources = useLinkSources().some((x) => x.enabled);
 
   const load = () => setReload((r) => r + 1);
   useEffect(() => {
@@ -336,6 +339,11 @@ export function SeriesDetail({ id }: { id: string }) {
               ) : (
                 <button className={`btn ${started && next ? "glass" : "white"} large`} disabled={!firstPlayable} onClick={() => firstPlayable && play(firstPlayable.id)}>
                   <Play size={19} fill={started && next ? "none" : "currentColor"} /> {t("series.play")}
+                </button>
+              )}
+              {hasLinkSources && (
+                <button className="btn glass large" onClick={() => openDialog(<LinkPlayDialog series={s} episodes={d.episodes} />)}>
+                  <Globe size={18} /> {t("links.button")}
                 </button>
               )}
               <button className="btn glass round large" title={s.favorite ? t("series.unfavorite") : t("series.addFavorite")}

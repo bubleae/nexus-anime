@@ -28,6 +28,7 @@ mod state;
 mod subtitles;
 mod system;
 mod watcher;
+mod webplayer;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -189,6 +190,9 @@ pub fn run() {
             plugins::plugin_storage_get,
             plugins::plugin_storage_set,
             plugins::plugin_http,
+            webplayer::probe_stream,
+            webplayer::open_web_player,
+            webplayer::close_web_player,
             plugins::plugin_fs_read,
             plugins::plugin_fs_write,
             plugins::plugin_fs_list,

@@ -157,6 +157,7 @@ db = _Proxy("db")
 api = _Proxy("api")
 app = _Proxy("app")
 plugins = _Proxy("plugins")
+discover = _Proxy("discover")
 utils = _Proxy("utils")
 
 

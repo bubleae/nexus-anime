@@ -29,9 +29,9 @@ Ordner und Videos lassen sich auch per Drag-and-drop aus dem Windows-Explorer in
 | Erkennung | `S01E02`, `1x02`, `Staffel 2 Folge 4`, `Name - 1025`, `Name 03`, Fansub-Namen mit `[Gruppe]`/`[1080p]`/CRC, Ordnerkontext für `02.mp4`/`S1 Ep2.mp4`, Specials/OVAs/Filme, Mehrteiler, Versionen (`05v2`), Sprach- und Untertitelhinweise |
 | Detailseite | Banner, Cover, Beschreibung, Genres, Statistiken, Staffel-Reiter, Episoden mit Vorschaubild, Laufzeit und Fortschritt, Drag-and-drop zwischen Staffeln, Mehrfachauswahl |
 | Windows | Im Standardplayer öffnen, im Explorer anzeigen (Datei markiert), Ordner öffnen, Pfad kopieren, Dateieigenschaften inkl. MKV-Spuren |
-| Player | Play/Pause, ±10 s, Lautstärke, Geschwindigkeit, Vollbild, Fortsetzen, „Nächste Folge“ mit Countdown, Untertitel (SRT/ASS/VTT neben der Datei, eingebettete MKV-Textuntertitel, eigene Datei laden), Audiospuren, frei belegbare Tastenkürzel |
+| Player | Eigene Stream-Links (Jellyfin, Plex, NAS – MP4/WebM/MKV und HLS) über **Mehr → Stream-Link abspielen**, Play/Pause, ±10 s, Lautstärke, Geschwindigkeit, Vollbild, Fortsetzen, „Nächste Folge“ mit Countdown, Untertitel (SRT/ASS/VTT neben der Datei, eingebettete MKV-Textuntertitel, eigene Datei laden), Audiospuren, frei belegbare Tastenkürzel |
 | Dateiverwaltung | Optionaler Bibliotheksordner (`Serie\Staffel 01\Serie - S01E01.mp4`), Kopieren oder Verschieben **nur nach Vorschau**, nie überschreiben, Datenbank-Backup vorher; Löschen einer Datei nur über den Papierkorb mit Eingabe des Dateinamens |
-| Plugins | Eigene Plugins in JavaScript oder Python (Seiten, Menüeinträge, Startseiten-Bereiche, Player-Knöpfe, Tastenkürzel, Themes, Ereignisse, HTTP, Dateien, Programme, SQL) und eingebaute Plugins, alle unter **Einstellungen → Plugins** schaltbar – Anleitung in [PLUGINS.md](PLUGINS.md) |
+| Plugins | Eigene Plugins in JavaScript oder Python (Suchquellen für „Entdecken“ – z. B. das Beispiel [Jellyfin](examples/plugins/jellyfin-quelle) –, Stream-Resolver wie der [Stream-Extractor](examples/plugins/stream-extractor) für Webseiten-Links, Seiten, Menüeinträge, Startseiten-Bereiche, Player-Knöpfe, Tastenkürzel, Themes, Ereignisse, HTTP, Dateien, Programme, SQL) und eingebaute Plugins, alle unter **Einstellungen → Plugins** schaltbar – Anleitung in [PLUGINS.md](PLUGINS.md) |
 | Daten | SQLite-Datenbank, Backup/Wiederherstellen, JSON-Export/-Import, Cache-Verwaltung, Protokolle, Diagnose; keine Telemetrie |
 
 ## Tastenkürzel im Player (Standard)
@@ -70,6 +70,10 @@ libmpv wurde bewusst nicht eingebettet: In einer WebView-Oberfläche lässt es s
 ## Entwicklung
 
 Voraussetzungen: Node.js, Rust (MSVC), Visual Studio Build Tools.
+
+Am einfachsten: **`Entwicklung starten.bat`** im Projektordner doppelklicken. Die App startet direkt aus den Quelldateien – Änderungen an `src\` erscheinen sofort, Änderungen an `src-tauri\` werden automatisch neu übersetzt. Vorher die installierte NEXUS ANIME schließen.
+
+Oder von Hand:
 
 ```bash
 npm install

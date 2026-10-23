@@ -1,15 +1,28 @@
-// „Entdecken“: Anime über AniList suchen, als Kacheln anzeigen, Episodenliste ansehen
-// und mit einem Klick als Online-Serie in die Bibliothek übernehmen. Nur Metadaten – keine Videos.
+// „Entdecken“: Anime über AniList und über Suchquellen von Plugins suchen, als Kacheln anzeigen,
+// Episodenliste ansehen und mit einem Klick als Online-Serie in die Bibliothek übernehmen.
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Check, Compass, ExternalLink, Library, Play, Plus, Search as SearchIcon } from "lucide-react";
+import { ArrowLeft, Check, Compass, ExternalLink, Globe, Library, Play, Plus, Search as SearchIcon } from "lucide-react";
 import { AnimeMatch, api, DiscoverDetail, errorText } from "../api";
 import { useStore } from "../store";
 import { t } from "../i18n";
-import { Empty, fallbackGradient, initials, Loading, providerOf } from "../components/ui";
+import { Empty, fallbackGradient, initials, Loading, providerOf, Switch } from "../components/ui";
+import { LinkPlayDialog } from "../components/LinkPlayDialog";
+import { previewTemplate, renderTemplate, useLinkSources } from "../player/linkSources";
+import { usePlugins } from "../plugins/host";
+import { SourceItem, SourceDetailView, SourceSection, useSourceSearch } from "./DiscoverSources";
 
 const LAST_QUERY_KEY = "nexus.discover.q";
+const ANILIST_KEY = "nexus.discover.anilist";
 
-function RemoteCover({ src, title }: { src: string | null; title: string }) {
+function storedAniList() {
+  try {
+    return localStorage.getItem(ANILIST_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+export function RemoteCover({ src, title }: { src: string | null; title: string }) {
   const [ok, setOk] = useState(true);
   return (
     <div className="cover">
@@ -197,8 +210,15 @@ function DiscoverDetailView({ m, back }: { m: AnimeMatch; back: () => void }) {
   );
 }
 
+type Selected = { kind: "anilist"; m: AnimeMatch } | { kind: "source"; sourceUid: string; item: SourceItem };
+
 export function Discover() {
-  const { series } = useStore();
+  const { series, openDialog } = useStore();
+  const { registry } = usePlugins();
+  const sources = registry.discoverSources;
+  const links = useLinkSources().filter((x) => x.enabled);
+  const [useAniList, setUseAniList] = useState(storedAniList);
+  const [filter, setFilter] = useState<string>("all");
   const [q, setQ] = useState(() => {
     try {
       return sessionStorage.getItem(LAST_QUERY_KEY) ?? "";
@@ -209,7 +229,7 @@ export function Discover() {
   const [results, setResults] = useState<AnimeMatch[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<AnimeMatch | null>(null);
+  const [selected, setSelected] = useState<Selected | null>(null);
   const libraryIds = useMemo(() => new Set(series.map((s) => s.anilistId).filter(Boolean)), [series]);
 
   // Suche leicht verzögert, um das Ratenlimit von AniList zu schonen
@@ -219,7 +239,7 @@ export function Discover() {
     } catch {
       /* ignorieren */
     }
-    if (q.trim().length < 2) {
+    if (q.trim().length < 2 || !useAniList) {
       setResults(null);
       setError(null);
       return;
@@ -236,33 +256,111 @@ export function Discover() {
       }
     }, 600);
     return () => clearTimeout(h);
-  }, [q]);
+  }, [q, useAniList]);
+  // Plugin-Quellen parallel durchsuchen
+  const sourceResults = useSourceSearch(sources, q);
+  const showAniList = useAniList && (filter === "all" || filter === "anilist");
+  const showLinks = links.length > 0 && (filter === "all" || filter === "links");
+  const visibleSources = sources.filter((s) => filter === "all" || filter === s.uid);
+  const grouped = sources.length > 0 || links.length > 0;
 
-  if (selected) return <DiscoverDetailView m={selected} back={() => setSelected(null)} />;
+  const toggleAniList = (on: boolean) => {
+    setUseAniList(on);
+    if (!on && filter === "anilist") setFilter("all");
+    try {
+      localStorage.setItem(ANILIST_KEY, on ? "on" : "off");
+    } catch {
+      /* ignorieren */
+    }
+  };
+  // Vorschau: Link der ersten aktiven Quelle für Folge 1 mit dem eingegebenen Titel
+  let linkPreview: string | null = null;
+  if (links.length && q.trim().length >= 2) {
+    try {
+      linkPreview = renderTemplate(links[0].template, { title: q.trim(), altTitle: null, season: 1, episode: 1, anilistId: null });
+    } catch {
+      linkPreview = previewTemplate(links[0].template).replace(/^(https?:\/\/[^/]+).*$/, "$1/…");
+    }
+  }
+
+  if (selected?.kind === "anilist") return <DiscoverDetailView m={selected.m} back={() => setSelected(null)} />;
+  if (selected?.kind === "source") {
+    const src = sources.find((s) => s.uid === selected.sourceUid);
+    if (src) return <SourceDetailView source={src} item={selected.item} back={() => setSelected(null)} />;
+  }
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1 className="page-title">{t("discover.title")}</h1>
-          <div className="page-sub">{t("discover.text")}</div>
+          <div className="page-sub">{t(!useAniList ? "discover.textNoAniList" : grouped ? "discover.textSources" : "discover.text")}</div>
         </div>
       </div>
       <div className="search-box">
         <SearchIcon size={20} />
         <input className="input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("discover.placeholder")} />
       </div>
-      {busy && !results && <Loading />}
-      {error && <Empty icon={<Compass size={30} />} title={t("meta.offline")} text={error} />}
-      {!q.trim() && !error && <Empty icon={<Compass size={30} />} title={t("discover.emptyTitle")} text={t("discover.emptyText")} />}
-      {results && results.length === 0 && !error && <Empty icon={<SearchIcon size={30} />} title={t("search.noResults", { q })} />}
-      {results && results.length > 0 && (
-        <div className="grid" style={{ opacity: busy ? 0.6 : 1, transition: "opacity .2s" }}>
-          {results.map((m) => (
-            <DiscoverCard key={m.anilistId} m={m} inLibrary={libraryIds.has(m.anilistId)} onOpen={() => setSelected(m)} />
+      {grouped && (
+        <div className="chips source-chips">
+          <button className={`chip ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>{t("discover.allSources")}</button>
+          {useAniList && <button className={`chip ${filter === "anilist" ? "active" : ""}`} onClick={() => setFilter("anilist")}>AniList</button>}
+          {links.length > 0 && (
+            <button className={`chip ${filter === "links" ? "active" : ""}`} onClick={() => setFilter("links")}>
+              <Globe size={13} /> {t("links.title")}
+            </button>
+          )}
+          {sources.map((s) => (
+            <button key={s.uid} className={`chip ${filter === s.uid ? "active" : ""}`} onClick={() => setFilter(s.uid)}>
+              {s.icon && <span className="plugin-icon">{s.icon}</span>} {s.name}
+            </button>
           ))}
+          <label className="anilist-toggle" title={t("discover.anilistToggle")}>
+            <span>AniList</span>
+            <Switch checked={useAniList} onChange={toggleAniList} />
+          </label>
         </div>
       )}
+      {!q.trim() && !error && <Empty icon={<Compass size={30} />} title={t("discover.emptyTitle")} text={t(!useAniList ? "discover.emptyTextNoAniList" : grouped ? "discover.emptyTextSources" : "discover.emptyText")} />}
+      {q.trim().length >= 2 && showLinks && (
+        <section className="source-section">
+          <div className="source-head">
+            <h2><Globe size={18} /> {t("links.title")}</h2>
+          </div>
+          <div className="stream-item link-discover" onClick={() => openDialog(<LinkPlayDialog title={q.trim()} />)}>
+            <Play size={18} />
+            <div className="grow">
+              <div className="t">{t("links.discoverPlay", { q: q.trim() })}</div>
+              {linkPreview && <div className="u">{linkPreview}</div>}
+            </div>
+          </div>
+        </section>
+      )}
+      {q.trim().length >= 2 && showAniList && (
+        <section className={grouped ? "source-section" : ""}>
+          {grouped && (
+            <div className="source-head">
+              <h2>AniList</h2>
+              {results && <span className="count">{results.length}</span>}
+              {busy && <div className="spinner" />}
+            </div>
+          )}
+          {busy && !results && !grouped && <Loading />}
+          {error && <Empty icon={<Compass size={30} />} title={t("meta.offline")} text={error} />}
+          {results && results.length === 0 && !error && (grouped ? <div className="hint source-empty">{t("discover.noHits")}</div> : <Empty icon={<SearchIcon size={30} />} title={t("search.noResults", { q })} />)}
+          {results && results.length > 0 && (
+            <div className="grid" style={{ opacity: busy ? 0.6 : 1, transition: "opacity .2s" }}>
+              {results.map((m) => (
+                <DiscoverCard key={m.anilistId} m={m} inLibrary={libraryIds.has(m.anilistId)} onOpen={() => setSelected({ kind: "anilist", m })} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {q.trim().length >= 2 &&
+        visibleSources.map((s) => (
+          <SourceSection key={s.uid} source={s} state={sourceResults[s.uid]} onOpen={(item) => setSelected({ kind: "source", sourceUid: s.uid, item })} />
+        ))}
     </div>
   );
 }

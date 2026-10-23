@@ -1,8 +1,9 @@
 import { ReactNode, useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  Database, FileCog, Puzzle, Film, FolderOpen, FolderPlus, HardDrive, Image, Info, Library, Palette, Play, RefreshCw, RotateCcw, Shield, Trash2, Undo2, X,
+  ArrowDown, ArrowUp, Database, FileCog, Puzzle, Film, FolderOpen, FolderPlus, HardDrive, Image, Info, Library, Link, Palette, Play, Plus, RefreshCw, RotateCcw, Shield, Trash2, Undo2, X,
 } from "lucide-react";
+import { addLinkSource, moveLinkSource, PLACEHOLDERS, previewTemplate, removeLinkSource, setLinkSourceEnabled, useLinkSources } from "../player/linkSources";
 import { api, Episode, Settings as S } from "../api";
 import { useStore } from "../store";
 import { t, TKey } from "../i18n";
@@ -11,12 +12,13 @@ import { Confirm, Modal, Switch } from "../components/ui";
 import { FileOpsDialog } from "../components/dialogs";
 import { PluginSettings } from "./Plugins";
 
-type Cat = "general" | "library" | "files" | "playback" | "metadata" | "plugins" | "data" | "about";
+type Cat = "general" | "library" | "files" | "playback" | "links" | "metadata" | "plugins" | "data" | "about";
 const CATS: { id: Cat; icon: ReactNode; label: TKey }[] = [
   { id: "general", icon: <Palette size={18} />, label: "settings.general" },
   { id: "library", icon: <Library size={18} />, label: "settings.library" },
   { id: "files", icon: <FileCog size={18} />, label: "settings.files" },
   { id: "playback", icon: <Play size={18} />, label: "settings.playback" },
+  { id: "links", icon: <Link size={18} />, label: "links.title" },
   { id: "metadata", icon: <Image size={18} />, label: "settings.metadata" },
   { id: "plugins", icon: <Puzzle size={18} />, label: "plugins.title" },
   { id: "data", icon: <Shield size={18} />, label: "settings.data" },
@@ -349,6 +351,90 @@ function Playback() {
 }
 
 // ---------------------------------------------------------------------------
+function LinkSources() {
+  const { toast } = useStore();
+  const list = useLinkSources();
+  const [name, setName] = useState("");
+  const [template, setTemplate] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  let preview: string | null = null;
+  let previewError: string | null = null;
+  if (template.trim()) {
+    try {
+      preview = previewTemplate(template.trim());
+    } catch (e) {
+      previewError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const add = () => {
+    try {
+      const s = addLinkSource(name, template);
+      setName("");
+      setTemplate("");
+      setError(null);
+      toast("success", t("links.added"), s.name);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <>
+      <Section title={t("links.title")} desc={t("links.text")}>
+        <div className="setting col">
+          <div className="row" style={{ width: "100%" }}>
+            <div className="field" style={{ flex: "0 0 200px" }}>
+              <label>{t("links.name")}</label>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label>{t("links.template")}</label>
+              <input
+                className="input"
+                value={template}
+                placeholder="http://192.168.1.10:8080/anime/{slug}/S{season:02}E{episode:02}.m3u8"
+                onChange={(e) => {
+                  setTemplate(e.target.value);
+                  setError(null);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && template.trim() && add()}
+              />
+            </div>
+          </div>
+          {preview && <div className="hint link-preview">{t("links.preview")} → {preview}</div>}
+          {(previewError || error) && <div className="plugin-error" style={{ margin: "4px 0 0" }}>{previewError ?? error}</div>}
+          <div className="hint" style={{ fontSize: 12.5, lineHeight: 1.6, marginTop: 6 }}>
+            {t("links.placeholders")} {PLACEHOLDERS.map((p) => <code key={p} className="link-ph">{p}</code>)}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button className="btn primary" disabled={!template.trim() || !!previewError} onClick={add}><Plus size={16} /> {t("links.add")}</button>
+          </div>
+        </div>
+      </Section>
+      <Section title={t("links.list")} desc={t("links.order")}>
+        {list.length === 0 && <div className="setting"><span className="hint">{t("links.empty")}</span></div>}
+        {list.map((s, i) => (
+          <div key={s.id} className="setting">
+            <div className="s-text" style={{ minWidth: 0 }}>
+              <div className="s-label" style={{ opacity: s.enabled ? 1 : 0.55 }}>{i + 1}. {s.name}</div>
+              <div className="s-desc link-template">{s.template}</div>
+            </div>
+            <div className="s-ctrl">
+              <Switch checked={s.enabled} onChange={(v) => setLinkSourceEnabled(s.id, v)} />
+              <button className="icon-btn" title={t("links.up")} disabled={i === 0} onClick={() => moveLinkSource(s.id, -1)}><ArrowUp size={16} /></button>
+              <button className="icon-btn" title={t("links.down")} disabled={i === list.length - 1} onClick={() => moveLinkSource(s.id, 1)}><ArrowDown size={16} /></button>
+              <button className="icon-btn" title={t("links.remove")} onClick={() => removeLinkSource(s.id)}><Trash2 size={16} /></button>
+            </div>
+          </div>
+        ))}
+      </Section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 function Metadata() {
   const { fail, toast, metadataBusy } = useStore();
   return (
@@ -519,6 +605,7 @@ export function SettingsPage() {
           {cat === "library" && <LibrarySettings />}
           {cat === "files" && <Files />}
           {cat === "playback" && <Playback />}
+          {cat === "links" && <LinkSources />}
           {cat === "metadata" && <Metadata />}
           {cat === "plugins" && <PluginSettings />}
           {cat === "data" && <Data />}

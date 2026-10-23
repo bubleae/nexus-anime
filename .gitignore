@@ -5,3 +5,8 @@ src-tauri/gen
 
 # Lokale Videodateien (Testbibliothek)
 Anime-Bibliothek/
+
+# Python
+.venv/
+__pycache__/
+*.pyc

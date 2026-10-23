@@ -279,6 +279,7 @@ export type PluginSettingField = {
 export type InstalledPlugin = { id: string; dir: string; manifest: PluginManifest; error: string | null };
 export type PluginOverview = { dir: string; plugins: InstalledPlugin[]; states: Record<string, boolean> };
 export type HttpResponse = { status: number; headers: Record<string, string>; body: string };
+export type StreamProbe = { status: number; finalUrl: string; contentType: string; kind: "hls" | "file" | "dash" | "html" | "unknown" };
 
 export type DuplicateGroup = { reason: "sameFile" | "sameEpisode"; episodes: Episode[] };
 
@@ -378,6 +379,11 @@ export const api = {
   pluginStorageSet: (id: string, key: string, value: unknown) => invoke<void>("plugin_storage_set", { id, key, value: value ?? null }),
   pluginHttp: (req: { url: string; method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }) =>
     invoke<HttpResponse>("plugin_http", { req }),
+  /** Lädt nur den Anfang eines Links und erkennt, ob es ein Video, HLS oder eine Webseite ist. */
+  probeStream: (url: string) => invoke<StreamProbe>("probe_stream", { url }),
+  /** Öffnet eine Webseite in der Webansicht; gefundene Video-Links kommen als Ereignis „web-player://found“. */
+  openWebPlayer: (url: string, title?: string) => invoke<void>("open_web_player", { url, title }),
+  closeWebPlayer: () => invoke<void>("close_web_player"),
   pluginFsRead: (path: string) => invoke<string>("plugin_fs_read", { path }),
   pluginFsWrite: (path: string, content: string, append?: boolean) => invoke<void>("plugin_fs_write", { path, content, append }),
   pluginFsList: (path: string) => invoke<{ name: string; path: string; isDir: boolean; size: number }[]>("plugin_fs_list", { path }),
